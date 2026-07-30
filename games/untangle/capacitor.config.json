@@ -1,0 +1,7 @@
+{
+  "appId": "com.campkin.untangle",
+  "appName": "Untangle",
+  "webDir": ".",
+  "server": { "androidScheme": "https" },
+  "ios": { "contentInset": "always" }
+}

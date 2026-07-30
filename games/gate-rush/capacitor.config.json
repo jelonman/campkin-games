@@ -1,0 +1,7 @@
+{
+  "appId": "com.campkin.gaterush",
+  "appName": "Gate Rush",
+  "webDir": ".",
+  "server": { "androidScheme": "https" },
+  "ios": { "contentInset": "always" }
+}

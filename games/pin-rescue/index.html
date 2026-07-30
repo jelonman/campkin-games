@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Pin Rescue — the game the ad actually showed</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:#10131a;color:#e6edf3;overflow:hidden;
+    font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;touch-action:none;user-select:none}
+  #wrap{position:fixed;inset:0;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:12px;padding:14px 16px;flex-shrink:0}
+  #level{font-size:19px;font-weight:700}
+  #hint{margin-left:auto;font-size:15px;color:#9fb0c3}
+  canvas{flex:1;display:block;width:100%;touch-action:none}
+  footer{padding:12px 16px calc(12px + env(safe-area-inset-bottom));display:flex;gap:10px;flex-shrink:0}
+  button{flex:1;padding:15px;border-radius:14px;border:1px solid #2b3648;background:#1a2130;
+    color:#e6edf3;font-size:17px;font-weight:600;cursor:pointer}
+  button:active{background:#232c3d}
+  button.primary{background:#2563eb;border-color:#2563eb}
+  #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(6,10,16,.93);flex-direction:column;gap:16px;padding:24px;text-align:center;z-index:5}
+  #overlay h2{font-size:32px;margin:0}
+  #overlay p{margin:0;color:#9fb0c3;font-size:17px;max-width:22rem;line-height:1.5}
+  #overlay button{max-width:20rem;width:100%}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header><span id="level">Level 1</span><span id="hint">pull the pins in the right order</span></header>
+  <canvas id="c"></canvas>
+  <footer>
+    <button id="retry">Try again</button>
+    <button id="skip" class="primary">Skip</button>
+  </footer>
+</div>
+<div id="overlay">
+  <h2 id="oTitle"></h2>
+  <p id="oText"></p>
+  <button id="oBtn" class="primary"></button>
+</div>
+
+<script>
+// Pin Rescue — game #1 of the Games Studio, and the single most-faked mechanic in mobile
+// advertising: pull the pins in the right order so the treasure reaches the hero and the
+// lava does not. Ads for this run constantly; the installed game is almost never this.
+//
+// Deliberately a tiny purpose-built particle sim rather than a physics engine: the whole
+// point of the department is that these games are small enough to actually finish.
+
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const $lvl = document.getElementById('level'), $hint = document.getElementById('hint');
+const $ov = document.getElementById('overlay'), $oT = document.getElementById('oTitle');
+const $oX = document.getElementById('oText'), $oB = document.getElementById('oBtn');
+
+let W=0,H=0,DPR=1,level=1,state='play',t=0;
+let pins=[], parts=[], hero=null, cup=null, solvedOrder=[];
+
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2);
+  const r=cv.getBoundingClientRect(); W=r.width; H=r.height;
+  cv.width=W*DPR|0; cv.height=H*DPR|0; ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener('resize',()=>{resize();load(level);});
+
+// --- level model --------------------------------------------------------------
+// A pin is a horizontal bar holding back a reservoir of particles. Each reservoir is
+// either TREASURE (must reach the cup) or LAVA (must not). Pull order is what matters.
+function makeLevel(n){
+  const cols = Math.min(2 + Math.floor(n/2), 4);
+  const topY = H*0.18, botY = H*0.62;
+  const gap = W/(cols+1);
+  pins = []; parts = []; solvedOrder = [];
+
+  // At least one treasure, at least one lava from level 2 onward.
+  const kinds = [];
+  for (let i=0;i<cols;i++) kinds.push(i===0 ? 'gold' : (n===1 ? 'gold' : (i%2 ? 'lava' : 'gold')));
+
+  kinds.forEach((kind,i)=>{
+    const x = gap*(i+1);
+    const pin = { x, y: topY + (i%2)*44, w: Math.min(gap*0.72, 130), kind, pulled:false, id:i };
+    pins.push(pin);
+    const count = 26;
+    for(let k=0;k<count;k++){
+      parts.push({
+        x: x + (Math.random()-0.5)*pin.w*0.75,
+        y: pin.y - 18 - Math.random()*70,
+        vx:0, vy:0, r:6, kind, pin:i, dead:false, scored:false
+      });
+    }
+  });
+
+  hero = { x: W/2, y: botY + 96, r: 26 };
+  cup  = { x: W/2, y: botY + 52, w: Math.min(W*0.34, 190), h: 26, gold:0, lava:0 };
+  // The intended solution: gold first (it lands in the cup), lava last (cup already full
+  // and the player has won by then). Recorded so the hint can be honest.
+  solvedOrder = pins.filter(p=>p.kind==='gold').map(p=>p.id)
+          .concat(pins.filter(p=>p.kind==='lava').map(p=>p.id));
+}
+
+function load(n){
+  level=n; state='play'; t=0;
+  $lvl.textContent='Level '+n;
+  $hint.textContent = n===1 ? 'tap the pin to pull it' : 'gold in the cup, lava away from it';
+  $ov.style.display='none';
+  resize(); makeLevel(n);
+}
+
+// --- simulation ---------------------------------------------------------------
+const G = 0.42;
+const FUNNEL_K = 0.010;      // horizontal pull toward the cup
+const FUNNEL_DAMP = 0.94;    // without this the spring oscillates and the gold overshoots
+function step(){
+  if(state!=='play') return;
+  t++;
+  for(const p of parts){
+    if(p.dead) continue;
+    const pin = pins[p.pin];
+    if(!pin.pulled){
+      // held back: rest on the bar
+      if(p.y > pin.y-8){ p.y = pin.y-8; p.vy=0; }
+      else { p.vy += G; p.y += p.vy; }
+      continue;
+    }
+    p.vy += G; p.y += p.vy;
+    // Funnel toward the cup. The first version used an UNDAMPED spring, which made success
+    // a knife-edge function of the constant: 0.0015 caught 100% of the gold, 0.003 caught
+    // 0% because the particles oscillated straight past the cup. Damping makes it work
+    // across a wide band instead of at one lucky value. Verified live at levels 1-6.
+    p.vx += (cup.x - p.x) * FUNNEL_K;
+    p.vx *= FUNNEL_DAMP;
+    p.x += p.vx;
+
+    // cup collision
+    if(p.y > cup.y - p.r && p.y < cup.y + cup.h && Math.abs(p.x - cup.x) < cup.w/2){
+      p.dead = true;
+      if(!p.scored){ p.scored=true; if(p.kind==='gold') cup.gold++; else cup.lava++; }
+      continue;
+    }
+    // hero hit = lose immediately if it is lava
+    if(p.kind==='lava'){
+      const dx=p.x-hero.x, dy=p.y-hero.y;
+      if(dx*dx+dy*dy < (hero.r+p.r)*(hero.r+p.r)){ lose('The lava reached them.'); return; }
+    }
+    if(p.y > H+40) p.dead = true;
+  }
+
+  if(cup.lava > 0 && state==='play'){ lose('Lava went in the cup.'); return; }
+
+  const goldTotal = parts.filter(p=>p.kind==='gold').length;
+  const goldSettled = parts.filter(p=>p.kind==='gold' && (p.dead || p.scored)).length;
+  // The win must NOT require every pin to be pulled. The first version did, which made the
+  // game unwinnable from level 2 onward: pulling the lava pins was mandatory for the win
+  // check and instantly lost the level. The puzzle is which pins are safe to pull.
+  const goldPinsPulled = pins.filter(p=>p.kind==='gold').every(p=>p.pulled);
+  if(goldPinsPulled && goldSettled === goldTotal && state==='play'){
+    if(cup.gold >= goldTotal*0.5) win();
+    else lose('Most of the gold missed the cup.');
+  }
+}
+
+function win(){
+  state='won';
+  $oT.textContent='Saved!'; $oT.style.color='#34d399';
+  $oX.textContent = level===1
+    ? "That is the actual game from the ad. No timer, no lives, no 'watch a video to continue'."
+    : `Level ${level} clear — ${cup.gold} gold in the cup, no lava.`;
+  $oB.textContent='Next level'; $oB.onclick=()=>load(level+1);
+  $ov.style.display='flex';
+}
+function lose(why){
+  state='lost';
+  $oT.textContent='Oops'; $oT.style.color='#ff6b6b';
+  $oX.textContent = why + ' Try a different order.';
+  $oB.textContent='Try again'; $oB.onclick=()=>load(level);
+  $ov.style.display='flex';
+}
+
+// --- render -------------------------------------------------------------------
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  // cup
+  ctx.fillStyle='#2b3648';
+  ctx.fillRect(cup.x-cup.w/2, cup.y, cup.w, cup.h);
+  ctx.fillStyle='#f5c451';
+  const fill = Math.min(cup.gold/14, 1) * (cup.h-6);
+  ctx.fillRect(cup.x-cup.w/2+3, cup.y+cup.h-3-fill, cup.w-6, fill);
+
+  // hero
+  ctx.beginPath(); ctx.arc(hero.x,hero.y,hero.r,0,7); ctx.fillStyle='#7aa2f7'; ctx.fill();
+  ctx.fillStyle='#10131a'; ctx.fillRect(hero.x-9,hero.y-7,5,5); ctx.fillRect(hero.x+5,hero.y-7,5,5);
+  ctx.fillRect(hero.x-7,hero.y+6,15,3);
+
+  // particles
+  for(const p of parts){
+    if(p.dead) continue;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,7);
+    ctx.fillStyle = p.kind==='gold' ? '#f5c451' : '#ff6b4a';
+    ctx.fill();
+  }
+
+  // pins
+  for(const p of pins){
+    if(p.pulled) continue;
+    ctx.strokeStyle = p.kind==='gold' ? '#cbd5e1' : '#cbd5e1';
+    ctx.lineWidth=9; ctx.lineCap='round';
+    ctx.beginPath(); ctx.moveTo(p.x-p.w/2,p.y); ctx.lineTo(p.x+p.w/2,p.y); ctx.stroke();
+    // grab knob so it reads as tappable
+    ctx.beginPath(); ctx.arc(p.x+p.w/2+10,p.y,11,0,7); ctx.fillStyle='#cbd5e1'; ctx.fill();
+  }
+}
+
+function loop(){ step(); draw(); requestAnimationFrame(loop); }
+
+// --- input --------------------------------------------------------------------
+function tap(ev){
+  if(state!=='play') return;
+  ev.preventDefault();
+  const tt = ev.touches ? ev.touches[0] : ev, r = cv.getBoundingClientRect();
+  const x = tt.clientX-r.left, y = tt.clientY-r.top;
+  // generous hit box: the whole bar plus the knob, padded for fingers
+  for(const p of pins){
+    if(p.pulled) continue;
+    if(x > p.x-p.w/2-24 && x < p.x+p.w/2+34 && Math.abs(y-p.y) < 30){ p.pulled = true; return; }
+  }
+}
+cv.addEventListener('mousedown',tap);
+cv.addEventListener('touchstart',tap,{passive:false});
+document.getElementById('retry').onclick=()=>load(level);
+document.getElementById('skip').onclick=()=>load(level+1);
+
+resize(); load(1); loop();
+</script>
+</body>
+</html>

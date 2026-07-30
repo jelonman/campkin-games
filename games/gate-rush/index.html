@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Gate Rush — the game the ad actually showed</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:#0c1018;color:#e6edf3;overflow:hidden;
+    font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;touch-action:none;user-select:none}
+  #wrap{position:fixed;inset:0;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:12px;padding:14px 16px;flex-shrink:0}
+  #lvl{font-size:19px;font-weight:700}
+  #crowd{margin-left:auto;font-size:20px;font-weight:800;color:#7aa2f7}
+  canvas{flex:1;display:block;width:100%;touch-action:none}
+  #foot{padding:10px 16px calc(12px + env(safe-area-inset-bottom));text-align:center;
+    color:#9fb0c3;font-size:15px;flex-shrink:0}
+  #overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(6,10,16,.94);flex-direction:column;gap:16px;padding:24px;text-align:center;z-index:5}
+  #overlay h2{font-size:32px;margin:0}
+  #overlay p{margin:0;color:#9fb0c3;font-size:17px;max-width:23rem;line-height:1.5}
+  #overlay button{width:100%;max-width:20rem;padding:15px;border-radius:14px;border:none;
+    background:#2563eb;color:#fff;font-size:17px;font-weight:600;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header><span id="lvl">Level 1</span><span id="crowd">1</span></header>
+  <canvas id="c"></canvas>
+  <div id="foot">drag left and right — pick the better gate</div>
+</div>
+<div id="overlay"><h2 id="oT"></h2><p id="oX"></p><button id="oB"></button></div>
+
+<script>
+// Gate Rush — game #3 of the Games Studio, and the genre the source video's own game sat in:
+// run forward, pass through ×/+ gates to grow your crowd, then hit the enemy wall. The ads
+// promise exactly this; the installed game is usually a base-builder with an energy timer.
+//
+// The whole game is one number (crowd) and one input (lane). That is the point: it is small
+// enough to finish, and it reads in three seconds in a video clip.
+
+const cv=document.getElementById('c'), ctx=cv.getContext('2d');
+const $lvl=document.getElementById('lvl'), $crowd=document.getElementById('crowd');
+const $ov=document.getElementById('overlay'), $oT=document.getElementById('oT');
+const $oX=document.getElementById('oX'), $oB=document.getElementById('oB');
+
+let W=0,H=0,DPR=1,level=1,state='play';
+let crowd=1, laneX=0.5, scroll=0, gates=[], enemy=null, runners=[];
+const SPEED=3.4;
+
+function resize(){
+  DPR=Math.min(devicePixelRatio||1,2);
+  const r=cv.getBoundingClientRect(); W=r.width; H=r.height;
+  cv.width=W*DPR|0; cv.height=H*DPR|0; ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener('resize',()=>{resize();});
+
+// --- level generation ---------------------------------------------------------
+// Every level is checked at build time: the BEST path must beat the enemy and the WORST
+// path must not. A runner game where every choice wins is a screensaver, and one where no
+// choice wins is a scam — which would be a particularly stupid bug for this department.
+function makeGates(n){
+  const rows = 3 + Math.floor(n/2);
+  const out = [];
+  for(let i=0;i<rows;i++){
+    const good = Math.random()<0.5
+      ? {op:'x', v: 2 + Math.floor(Math.random()*2)}      // x2 or x3
+      : {op:'+', v: 8 + Math.floor(Math.random()*12)};
+    const bad = Math.random()<0.5
+      ? {op:'-', v: 4 + Math.floor(Math.random()*8)}
+      : {op:'/', v: 2};
+    const leftIsGood = Math.random()<0.5;
+    out.push({ y: -(i+1)*260 - 220,
+               left:  leftIsGood ? good : bad,
+               right: leftIsGood ? bad  : good,
+               used:false });
+  }
+  return out;
+}
+function applyGate(c,g){
+  // Floor at 1, never 0. The first version let a single bad gate wipe the crowd to zero on
+  // level 1, which is not difficulty — it is a coin flip that ends the run before the player
+  // has learned what the symbols mean.
+  if(g.op==='x') return c*g.v;
+  if(g.op==='+') return c+g.v;
+  if(g.op==='-') return Math.max(1, c-g.v);
+  return Math.max(1, Math.floor(c/g.v));
+}
+function pathResult(gs, pick){           // pick(i) -> 'left'|'right'
+  let c=1;
+  gs.forEach((g,i)=>{ c = applyGate(c, g[pick(i)]); });
+  return c;
+}
+function bestOf(g){ return Math.max(applyGate(1,g.left), applyGate(1,g.right)); }
+
+// How many gates the player gets wrong, best-first.
+function pathWithMistakes(gs, k){
+  let c = 1;
+  gs.forEach((g,i)=>{
+    const good = applyGate(1,g.left) >= applyGate(1,g.right) ? 'left' : 'right';
+    const bad  = good === 'left' ? 'right' : 'left';
+    c = applyGate(c, g[i < k ? bad : good]);
+  });
+  return c;
+}
+
+function makeLevel(n){
+  let gs, best, one, guard=0;
+  do{
+    gs = makeGates(n);
+    best = pathWithMistakes(gs, 0);
+    one  = pathWithMistakes(gs, 1);
+    // The enemy is calibrated against ONE MISTAKE, not against the worst possible run.
+    // Setting it to the midpoint of best and worst made level 3 winnable with two mistakes
+    // and level 1 unwinnable with one — difficulty that swung on the random gate values
+    // rather than on the player. Sitting it between best and one-mistake means a clean run
+    // wins, and a sloppy one does not, at every level.
+    const target = Math.floor(Math.sqrt(Math.max(best,1) * Math.max(one,1)));
+    enemy = { n: Math.max(2, target), y: gs[gs.length-1].y - 300 };
+  } while(!(best > enemy.n && one <= enemy.n) && guard++ < 120);
+  gates = gs;
+  window.__levelMath = {best, one, enemy: enemy.n};
+  crowd = 1; scroll = 0; laneX = 0.5; state='play';
+  runners = [];
+}
+
+function load(n){
+  level=n; $lvl.textContent='Level '+n; $ov.style.display='none';
+  resize(); makeLevel(n); $crowd.textContent=crowd;
+}
+
+// --- loop ---------------------------------------------------------------------
+function step(){
+  if(state!=='play') return;
+  scroll += SPEED;
+  const px = W*laneX, py = H*0.74;
+
+  for(const g of gates){
+    if(g.used) continue;
+    const gy = g.y + scroll;
+    if(gy > py-10 && gy < py+10){
+      g.used = true;
+      crowd = applyGate(crowd, laneX < 0.5 ? g.left : g.right);
+      $crowd.textContent = crowd;
+      if(crowd <= 0){ over(false, 'Your whole crowd was wiped out at a gate.'); return; }
+    }
+  }
+  const ey = enemy.y + scroll;
+  if(ey > py-14){
+    if(crowd > enemy.n) over(true, `${crowd} vs ${enemy.n}. You picked the right gates.`);
+    else over(false, `${crowd} vs ${enemy.n}. Not enough — take the multiplier gates.`);
+  }
+}
+
+function over(won, msg){
+  state = won ? 'won':'lost';
+  $oT.textContent = won ? 'You win!' : 'Overrun';
+  $oT.style.color = won ? '#34d399' : '#ff6b6b';
+  $oX.textContent = msg + (level===1 && won
+    ? " That is the whole game from the ad — no energy timer, no base to build." : "");
+  $oB.textContent = won ? 'Next level' : 'Try again';
+  $oB.onclick = () => load(won ? level+1 : level);
+  $ov.style.display='flex';
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  // lane
+  ctx.fillStyle='#141b26'; ctx.fillRect(W*0.06,0,W*0.88,H);
+  ctx.strokeStyle='#243044'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(W/2,0); ctx.lineTo(W/2,H); ctx.stroke();
+
+  // gates
+  for(const g of gates){
+    const gy = g.y + scroll;
+    if(gy < -80 || gy > H+80) continue;
+    const draw1 = (gate, x0, x1) => {
+      const good = gate.op==='x' || gate.op==='+';
+      ctx.fillStyle = good ? 'rgba(52,211,153,.20)' : 'rgba(255,107,107,.20)';
+      ctx.fillRect(x0, gy-34, x1-x0, 68);
+      ctx.fillStyle = good ? '#34d399' : '#ff6b6b';
+      ctx.font='700 30px ui-sans-serif,system-ui'; ctx.textAlign='center';
+      ctx.fillText((gate.op==='x'?'×':gate.op==='/'?'÷':gate.op)+gate.v, (x0+x1)/2, gy+11);
+    };
+    draw1(g.left,  W*0.06, W*0.5);
+    draw1(g.right, W*0.5,  W*0.94);
+  }
+
+  // enemy wall
+  const ey = enemy.y + scroll;
+  if(ey > -80 && ey < H+80){
+    ctx.fillStyle='rgba(255,107,107,.28)'; ctx.fillRect(W*0.06, ey-40, W*0.88, 80);
+    ctx.fillStyle='#ff6b6b'; ctx.font='800 34px ui-sans-serif,system-ui'; ctx.textAlign='center';
+    ctx.fillText('👹 '+enemy.n, W/2, ey+12);
+  }
+
+  // crowd: draw up to 40 dots so big numbers stay readable
+  const px = W*laneX, py = H*0.74;
+  const show = Math.min(crowd, 40);
+  for(let i=0;i<show;i++){
+    const a = (i/Math.max(show,1))*Math.PI*2, rr = 8 + Math.min(show,40)*0.9;
+    ctx.beginPath();
+    ctx.arc(px + Math.cos(a)*rr*(i%3?1:.5), py + Math.sin(a)*rr*0.5*(i%3?1:.5), 7, 0, 7);
+    ctx.fillStyle='#7aa2f7'; ctx.fill();
+  }
+  ctx.fillStyle='#e6edf3'; ctx.font='800 22px ui-sans-serif,system-ui'; ctx.textAlign='center';
+  ctx.fillText(crowd, px, py+6);
+}
+
+function loop(){ step(); draw(); requestAnimationFrame(loop); }
+
+// --- input --------------------------------------------------------------------
+function moveTo(ev){
+  if(state!=='play') return;
+  ev.preventDefault();
+  const t = ev.touches ? ev.touches[0] : ev, r = cv.getBoundingClientRect();
+  laneX = Math.max(0.12, Math.min(0.88, (t.clientX - r.left)/r.width));
+}
+cv.addEventListener('mousemove', e => { if(e.buttons) moveTo(e); });
+cv.addEventListener('mousedown', moveTo);
+cv.addEventListener('touchstart', moveTo, {passive:false});
+cv.addEventListener('touchmove', moveTo, {passive:false});
+
+resize(); load(1); loop();
+</script>
+</body>
+</html>

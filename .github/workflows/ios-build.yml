@@ -1,0 +1,59 @@
+# Adds the native iOS project to each Capacitor game on a real macOS runner.
+#
+# Why this exists: `npx cap add ios` requires macOS + Xcode, and this box is Linux. That single
+# mechanical step is the only thing between the 3 web games and an App Store submission (row 1,
+# deadline 2026-08-22). A GitHub-hosted macos runner does it for free on public repos.
+#
+# What it DOES: installs Capacitor, generates ios/ for each game, and builds unsigned to prove
+# the project compiles. Uploads ios/ as an artifact so the generated project can be committed.
+# What it does NOT do: sign, or upload to App Store Connect. Signing needs the owner's Apple
+# certificates and an App Store Connect API key — that is his identity, not the agent's.
+name: iOS project generate + unsigned build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "games/**/capacitor.config.json"
+
+jobs:
+  ios:
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        game: [untangle, pin-rescue, gate-rush]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Capacitor
+        working-directory: games/${{ matrix.game }}
+        run: |
+          npm init -y >/dev/null 2>&1 || true
+          npm install @capacitor/core @capacitor/cli @capacitor/ios --no-audit --no-fund
+
+      - name: Add the iOS platform
+        working-directory: games/${{ matrix.game }}
+        run: npx cap add ios
+
+      - name: Sync web assets into the iOS project
+        working-directory: games/${{ matrix.game }}
+        run: npx cap sync ios
+
+      - name: Build unsigned (proves the project compiles)
+        working-directory: games/${{ matrix.game }}/ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App \
+            -sdk iphonesimulator -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO build | tail -40
+
+      - name: Upload the generated iOS project
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ matrix.game }}
+          path: games/${{ matrix.game }}/ios
+          retention-days: 14

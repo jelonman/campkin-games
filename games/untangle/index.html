@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>Untangle — the game the ad actually showed</title>
+<style>
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;background:#0d1117;color:#e6edf3;
+    font-family:ui-sans-serif,system-ui,-apple-system,sans-serif;overflow:hidden;
+    touch-action:none;user-select:none}
+  #wrap{position:fixed;inset:0;display:flex;flex-direction:column}
+  header{display:flex;align-items:center;gap:12px;padding:14px 16px;flex-shrink:0}
+  #level{font-size:19px;font-weight:700}
+  #crossings{margin-left:auto;font-size:17px;color:#9fb0c3}
+  #crossings.solved{color:#34d399;font-weight:700}
+  canvas{flex:1;display:block;width:100%;touch-action:none}
+  footer{padding:12px 16px calc(12px + env(safe-area-inset-bottom));display:flex;gap:10px;flex-shrink:0}
+  button{flex:1;padding:15px;border-radius:14px;border:1px solid #2b3648;background:#161d29;
+    color:#e6edf3;font-size:17px;font-weight:600;cursor:pointer}
+  button:active{background:#1e2635}
+  button.primary{background:#2563eb;border-color:#2563eb}
+  #win{position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(6,10,16,.93);flex-direction:column;gap:18px;padding:24px;text-align:center;z-index:5}
+  #win h2{font-size:34px;margin:0;color:#34d399}
+  #win p{margin:0;color:#9fb0c3;font-size:17px;max-width:22rem;line-height:1.5}
+  #win button{max-width:20rem;width:100%}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <span id="level">Level 1</span>
+    <span id="crossings">— crossings</span>
+  </header>
+  <canvas id="c"></canvas>
+  <footer>
+    <button id="again">Shuffle</button>
+    <button id="skip" class="primary">Next level</button>
+  </footer>
+</div>
+
+<div id="win">
+  <h2 id="winTitle">Untangled!</h2>
+  <p id="winText"></p>
+  <button id="next" class="primary">Next level</button>
+</div>
+
+<script>
+// Untangle — game #3 of the Games Studio. The mechanic mobile ads promise constantly and
+// almost never ship: drag the dots until no lines cross. Pure geometry, no physics engine,
+// which is exactly why it is the cheapest of the three to actually finish.
+//
+// Levels are generated from a planar graph built on a circle, then scrambled — so every
+// level is guaranteed solvable. That matters: hand-placed levels can be accidentally
+// impossible, and an impossible level in a game about "the ad lied" would be the joke
+// writing itself.
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const $level = document.getElementById('level');
+const $cross = document.getElementById('crossings');
+const $win = document.getElementById('win');
+const $winText = document.getElementById('winText');
+const $winTitle = document.getElementById('winTitle');
+
+let W = 0, H = 0, DPR = 1;
+let nodes = [], edges = [], level = 1, dragging = null, best = {};
+const R = 18;                       // node radius in CSS px (finger-sized)
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const r = cv.getBoundingClientRect();
+  W = r.width; H = r.height;
+  cv.width = Math.floor(W * DPR); cv.height = Math.floor(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  draw();
+}
+window.addEventListener('resize', resize);
+
+// --- level generation ---------------------------------------------------------
+// Place n nodes on a circle and connect them so the graph is planar by construction
+// (a cycle plus non-crossing chords), then scatter the positions. Solvable, always.
+function build(n, extraChords) {
+  const cx = W / 2, cy = H / 2, rad = Math.min(W, H) * 0.36;
+  const solved = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 - Math.PI / 2;
+    solved.push({ x: cx + Math.cos(a) * rad, y: cy + Math.sin(a) * rad });
+  }
+  const e = [];
+  for (let i = 0; i < n; i++) e.push([i, (i + 1) % n]);   // the outer cycle
+
+  // Non-crossing chords: only connect i..j when no chosen chord already separates them.
+  const chords = [];
+  const fits = (i, j) => chords.every(([a, b]) => {
+    const between = (x, lo, hi) => (lo < hi ? x > lo && x < hi : x > lo || x < hi);
+    const iIn = between(i, a, b), jIn = between(j, a, b);
+    return iIn === jIn;
+  });
+  let guard = 0;
+  while (chords.length < extraChords && guard++ < 400) {
+    const i = Math.floor(Math.random() * n);
+    let j = Math.floor(Math.random() * n);
+    if (j === i || Math.abs(i - j) === 1 || Math.abs(i - j) === n - 1) continue;
+    if (chords.some(([a, b]) => (a === i && b === j) || (a === j && b === i))) continue;
+    if (!fits(i, j)) continue;
+    chords.push([i, j]); e.push([i, j]);
+  }
+
+  // Scatter: random positions inside the safe area, so the player has to do the work.
+  const pad = R + 14;
+  nodes = solved.map(() => ({
+    x: pad + Math.random() * (W - pad * 2),
+    y: pad + Math.random() * (H - pad * 2),
+  }));
+  edges = e;
+}
+
+// --- geometry -----------------------------------------------------------------
+function segmentsCross(p1, p2, p3, p4) {
+  const d = (a, b, c) => (c.y - a.y) * (b.x - a.x) - (c.x - a.x) * (b.y - a.y);
+  const d1 = d(p3, p4, p1), d2 = d(p3, p4, p2), d3 = d(p1, p2, p3), d4 = d(p1, p2, p4);
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+         ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+}
+
+function crossingList() {
+  const out = [];
+  for (let i = 0; i < edges.length; i++) {
+    for (let j = i + 1; j < edges.length; j++) {
+      const [a, b] = edges[i], [c, dd] = edges[j];
+      if (a === c || a === dd || b === c || b === dd) continue;   // share a node: never "crossing"
+      if (segmentsCross(nodes[a], nodes[b], nodes[c], nodes[dd])) out.push([i, j]);
+    }
+  }
+  return out;
+}
+
+// --- rendering ----------------------------------------------------------------
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  const crossing = crossingList();
+  const bad = new Set(crossing.flat());
+
+  ctx.lineCap = 'round';
+  edges.forEach(([a, b], i) => {
+    ctx.beginPath();
+    ctx.moveTo(nodes[a].x, nodes[a].y);
+    ctx.lineTo(nodes[b].x, nodes[b].y);
+    ctx.strokeStyle = bad.has(i) ? '#ff6b6b' : '#3ddc97';
+    ctx.lineWidth = bad.has(i) ? 4 : 3;
+    ctx.stroke();
+  });
+
+  nodes.forEach((n, i) => {
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, R, 0, Math.PI * 2);
+    ctx.fillStyle = dragging === i ? '#7aa2f7' : '#e6edf3';
+    ctx.fill();
+    ctx.lineWidth = 3; ctx.strokeStyle = '#0d1117'; ctx.stroke();
+  });
+
+  const n = crossing.length;
+  $cross.textContent = n === 0 ? 'no crossings' : (n + (n === 1 ? ' crossing' : ' crossings'));
+  $cross.classList.toggle('solved', n === 0);
+  return n;
+}
+
+function check() {
+  if (draw() !== 0 && !firstDraw) return;
+  if (crossingList().length === 0 && !firstDraw) win();
+}
+let firstDraw = true;
+
+function win() {
+  best[level] = true;
+  $winTitle.textContent = level % 5 === 0 ? 'Nice run!' : 'Untangled!';
+  $winText.textContent = level === 1
+    ? "That's the whole game. No timers, no lives, no 'watch an ad to continue'."
+    : `Level ${level} clear — ${nodes.length} dots, ${edges.length} ropes.`;
+  $win.style.display = 'flex';
+}
+
+// --- input --------------------------------------------------------------------
+function pos(ev) {
+  const t = ev.touches ? ev.touches[0] : ev;
+  const r = cv.getBoundingClientRect();
+  return { x: t.clientX - r.left, y: t.clientY - r.top };
+}
+function pick(p) {
+  // Search backwards so the visually top-most node wins, and use a generous radius so
+  // fingers work as well as a mouse.
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const dx = nodes[i].x - p.x, dy = nodes[i].y - p.y;
+    if (dx * dx + dy * dy <= (R + 12) * (R + 12)) return i;
+  }
+  return null;
+}
+function down(ev) { ev.preventDefault(); dragging = pick(pos(ev)); draw(); }
+function move(ev) {
+  if (dragging === null) return;
+  ev.preventDefault();
+  const p = pos(ev), pad = R + 4;
+  nodes[dragging].x = Math.max(pad, Math.min(W - pad, p.x));
+  nodes[dragging].y = Math.max(pad, Math.min(H - pad, p.y));
+  draw();
+}
+function up() { if (dragging === null) return; dragging = null; firstDraw = false; check(); }
+
+cv.addEventListener('mousedown', down);
+cv.addEventListener('touchstart', down, { passive: false });
+window.addEventListener('mousemove', move);
+window.addEventListener('touchmove', move, { passive: false });
+window.addEventListener('mouseup', up);
+window.addEventListener('touchend', up);
+
+// --- level flow ---------------------------------------------------------------
+function load(n) {
+  level = n;
+  $level.textContent = 'Level ' + n;
+  $win.style.display = 'none';
+  firstDraw = true;
+  // Curve: 5 dots at level 1, growing slowly, chords appearing from level 3.
+  const count = Math.min(4 + Math.ceil(n * 0.8), 14);
+  const chords = n < 3 ? 0 : Math.min(Math.floor((n - 2) / 2), 5);
+  build(count, chords);
+  // Never hand the player an already-solved board.
+  let guard = 0;
+  while (crossingList().length === 0 && guard++ < 30) build(count, chords);
+  draw();
+  firstDraw = false;
+}
+
+document.getElementById('again').onclick = () => load(level);
+document.getElementById('skip').onclick = () => load(level + 1);
+document.getElementById('next').onclick = () => load(level + 1);
+
+resize();
+load(1);
+</script>
+</body>
+</html>
