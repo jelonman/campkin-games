@@ -1,7 +1,11 @@
 {
   "appId": "com.campkin.pinrescue",
   "appName": "Pin Rescue",
-  "webDir": ".",
-  "server": { "androidScheme": "https" },
-  "ios": { "contentInset": "always" }
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "ios": {
+    "contentInset": "always"
+  }
 }
