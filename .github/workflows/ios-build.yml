@@ -36,9 +36,24 @@ jobs:
           npm init -y >/dev/null 2>&1 || true
           npm install @capacitor/core @capacitor/cli @capacitor/ios --no-audit --no-fund
 
-      - name: Add the iOS platform
+      # `cap add ios` generates the Xcode project and THEN runs `pod install`. The pod step
+      # fails because the Podfile Capacitor writes targets an iOS version below what
+      # Capacitor 7 requires ("required a higher minimum deployment target"). So: let the
+      # generate step run, raise the deployment target in the Podfile it just wrote, and
+      # install the pods ourselves.
+      - name: Generate the iOS project (pods may fail here — expected)
         working-directory: games/${{ matrix.game }}
-        run: npx cap add ios
+        run: npx cap add ios || echo "cap add exited non-zero; continuing to patch the Podfile"
+
+      - name: Raise the iOS deployment target in the generated Podfile
+        working-directory: games/${{ matrix.game }}/ios/App
+        run: |
+          sed -i '' "s/^platform :ios.*/platform :ios, '14.0'/" Podfile
+          grep '^platform' Podfile
+
+      - name: Install pods
+        working-directory: games/${{ matrix.game }}/ios/App
+        run: pod install --repo-update
 
       - name: Sync web assets into the iOS project
         working-directory: games/${{ matrix.game }}
