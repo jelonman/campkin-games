@@ -45,11 +45,19 @@ jobs:
         working-directory: games/${{ matrix.game }}
         run: npx cap add ios || echo "cap add exited non-zero; continuing to patch the Podfile"
 
-      - name: Raise the iOS deployment target in the generated Podfile
-        working-directory: games/${{ matrix.game }}/ios/App
+      # Do not guess the version — read the minimum Capacitor itself declares in its podspec
+      # and write exactly that into the Podfile. Hardcoding 14.0 was still too low.
+      - name: Match the Podfile deployment target to Capacitor's own podspec
+        working-directory: games/${{ matrix.game }}
         run: |
-          sed -i '' "s/^platform :ios.*/platform :ios, '14.0'/" Podfile
-          grep '^platform' Podfile
+          SPEC=$(ls node_modules/@capacitor/ios/*.podspec | head -1)
+          echo "podspec: $SPEC"
+          TARGET=$(grep -Eo "deployment_target[[:space:]]*=[[:space:]]*['\"][0-9.]+" "$SPEC" \
+                   | grep -Eo "[0-9.]+$" | head -1)
+          echo "Capacitor requires iOS $TARGET"
+          test -n "$TARGET"
+          sed -i '' "s/^platform :ios.*/platform :ios, '$TARGET'/" ios/App/Podfile
+          grep '^platform' ios/App/Podfile
 
       - name: Install pods
         working-directory: games/${{ matrix.game }}/ios/App
