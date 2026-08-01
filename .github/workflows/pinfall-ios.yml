@@ -109,6 +109,13 @@ jobs:
       - name: Compile the generated project (unsigned)
         run: |
           set -euo pipefail
+          # Godot writes objectVersion = 46 into project.pbxproj -- Xcode 3.2 era. Recent Xcode
+          # refuses to open that at all and says only "Unable to read project", which is what
+          # every run has been reporting. Pick the oldest Xcode the runner has.
+          ls /Applications | grep -i "^Xcode" || true
+          XC=$(ls -d /Applications/Xcode_15*.app 2>/dev/null | sort | head -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC/Contents/Developer"; fi
+          xcodebuild -version
           cd pinfall/export
           # Godot emits a TARGET, not a scheme, and -scheme on a project without shared schemes
           # fails with the misleading "Unable to read project". Ask the project what it has
