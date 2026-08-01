@@ -1,0 +1,35 @@
+; Pinfall — a pull-the-pin puzzler built to look like the ad, not like a prototype.
+; Godot 4.6, Mobile renderer: the Forward+ renderer will not run on the phones this ships to,
+; and picking it is the single most common reason a Godot mobile build looks fine on desktop
+; and renders black on device.
+
+config_version=5
+
+[application]
+config/name="Pinfall"
+config/description="Pull the pins in the right order. Physical liquid, real materials, one screen."
+run/main_scene="res://levels/level_01.tscn"
+config/features=PackedStringArray("4.6", "Mobile")
+boot_splash/show_image=false
+
+[display]
+window/size/viewport_width=1080
+window/size/viewport_height=1920
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+window/handheld/orientation=1
+
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+textures/default_filters/anisotropic_filtering_level=4
+anti_aliasing/quality/msaa_3d=2
+lights_and_shadows/directional_shadow/soft_shadow_filter_quality=3
+environment/defaults/default_clear_color=Color(0.05, 0.05, 0.07, 1)
+
+[physics]
+common/physics_ticks_per_second=120
+3d/default_gravity=14.0
+
+[input_devices]
+pointing/emulate_touch_from_mouse=true

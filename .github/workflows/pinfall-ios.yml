@@ -1,0 +1,75 @@
+name: iOS build
+
+# Why a runner and not this box: Godot can export an iOS Xcode project from Linux, but only
+# macOS can compile and sign one, and there is no Mac here. The repo already proved this shape
+# works for the Capacitor games (run 30557440973 green on three targets), so the same lane is
+# reused rather than invented.
+#
+# Signing is deliberately left OFF in this workflow. The App Store Connect API key on the box
+# can create bundle ids and read certificates, but Apple does not allow app-record creation
+# over the API at all ("The resource 'apps' does not allow 'CREATE'"), so a signed upload needs
+# the app record to exist first. This builds and archives the unsigned Xcode project so the
+# compile is verified on every push; signing is a second workflow once the record exists.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "**.gd"
+      - "project.godot"
+      - "export_presets.cfg"
+      - ".github/workflows/ios.yml"
+
+jobs:
+  ios:
+    runs-on: macos-14
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot and the iOS export templates
+        run: |
+          set -euo pipefail
+          V=4.6.3-stable
+          curl -sSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_macos.universal.zip"
+          curl -sSL -o templates.tpz \
+            "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_export_templates.tpz"
+          unzip -q godot.zip
+          # The engine looks for templates under a version-named directory; the archive unpacks
+          # to a generic 'templates' folder, so it has to be moved rather than just extracted.
+          mkdir -p "$HOME/Library/Application Support/Godot/export_templates"
+          unzip -q templates.tpz -d /tmp/tpl
+          mv /tmp/tpl/templates "$HOME/Library/Application Support/Godot/export_templates/${V/-/.}"
+          ls "$HOME/Library/Application Support/Godot/export_templates/"
+
+      - name: Import assets
+        run: |
+          # --headless --quit does NOT import. That cost a render of pure white on 2026-08-01:
+          # every material fell back to untextured because the .import files did not exist.
+          ./Godot.app/Contents/MacOS/Godot --headless --path . --import
+
+      - name: Export the Xcode project
+        run: |
+          set -euo pipefail
+          mkdir -p export
+          ./Godot.app/Contents/MacOS/Godot --headless --path . \
+            --export-debug "iOS" export/Pinfall.ipa || true
+          ls -la export || true
+          test -d export/Pinfall.xcodeproj || test -f export/Pinfall.ipa || \
+            (echo "no Xcode project or ipa produced" && ls -R export && exit 1)
+
+      - name: Compile the generated project (unsigned)
+        run: |
+          set -euo pipefail
+          cd export
+          xcodebuild -project Pinfall.xcodeproj -scheme Pinfall \
+            -configuration Debug -sdk iphoneos \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build | tail -25
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinfall-ios-project
+          path: export/
+          retention-days: 7
