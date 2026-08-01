@@ -23,7 +23,7 @@ on:
 jobs:
   ios:
     runs-on: macos-14
-    timeout-minutes: 40
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -42,19 +42,49 @@ jobs:
           unzip -q templates.tpz -d /tmp/tpl
           mv /tmp/tpl/templates "$HOME/Library/Application Support/Godot/export_templates/${V/-/.}"
           ls "$HOME/Library/Application Support/Godot/export_templates/"
+          # ⛔ Gatekeeper. An .app downloaded with curl carries com.apple.quarantine, and macOS
+          # then stalls the first launch instead of refusing it. The same import runs in 3.1
+          # seconds on Linux and hung for 32 minutes here with no output — measured, not guessed.
+          xattr -dr com.apple.quarantine Godot.app || true
+          chmod +x Godot.app/Contents/MacOS/Godot
+          # Prove the binary actually starts before spending the rest of the job on it.
+          ./Godot.app/Contents/MacOS/Godot --version
 
       - name: Import assets
         run: |
+          set -euo pipefail
           # --headless --quit does NOT import. That cost a render of pure white on 2026-08-01:
           # every material fell back to untextured because the .import files did not exist.
-          ./Godot.app/Contents/MacOS/Godot --headless --path . --import
+          #
+          # EVERY godot invocation here is wrapped in `timeout`. The first version of this
+          # workflow had none, and the import step hung for 32 minutes on a macOS runner (which
+          # bills at 10x) with no output and no way to see where it was. A CI step that can hang
+          # without a deadline is a bill, not a build.
+          #
+          # `< /dev/null` matters as much as the timeout: a Godot that hits any prompt on a
+          # runner with no tty waits forever on stdin, and that is the most likely explanation
+          # for a silent 32-minute import of thirteen JPEGs.
+          # `timeout` is GNU coreutils and is NOT on a stock macOS runner, so a workflow that
+          # relies on it silently loses its own deadline. Portable watchdog instead.
+          bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!;
+                    wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
+          LIMIT=420
+          bound ./Godot.app/Contents/MacOS/Godot --headless --path . --import > import.log 2>&1 || true
+          tail -25 import.log
+          echo "--- imported resources ---"
+          ls .godot/imported 2>/dev/null | head -20
+          test -d .godot/imported || (echo "IMPORT PRODUCED NOTHING" && exit 1)
 
       - name: Export the Xcode project
         run: |
           set -euo pipefail
           mkdir -p export
-          ./Godot.app/Contents/MacOS/Godot --headless --path . \
-            --export-debug "iOS" export/Pinfall.ipa || true
+          bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!;
+                    wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
+          LIMIT=780
+          bound ./Godot.app/Contents/MacOS/Godot --headless --path . \
+            --export-debug "iOS" export/Pinfall.ipa > export.log 2>&1 || true
+          tail -30 export.log
           ls -la export || true
           test -d export/Pinfall.xcodeproj || test -f export/Pinfall.ipa || \
             (echo "no Xcode project or ipa produced" && ls -R export && exit 1)

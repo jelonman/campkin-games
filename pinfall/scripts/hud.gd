@@ -12,6 +12,29 @@ var _verdict: Label
 
 func _ready() -> void:
 	layer = 10
+	# A dark gradient behind the text. The outline alone was not enough: the title sits over
+	# sunlit concrete, and white-on-cream at 28px is unreadable in exactly the frames an ad
+	# would use. A band costs one quad and makes the text survive any background under it.
+	var band := ColorRect.new()
+	band.anchor_right = 1.0
+	band.custom_minimum_size = Vector2(0, 140)
+	band.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var grad := Gradient.new()
+	grad.set_color(0, Color(0, 0, 0, 0.72))
+	grad.set_color(1, Color(0, 0, 0, 0.0))
+	var tex := GradientTexture2D.new()
+	tex.gradient = grad
+	tex.fill_from = Vector2(0, 0)
+	tex.fill_to = Vector2(0, 1)
+	var style := StyleBoxTexture.new()
+	style.texture = tex
+	var panel := Panel.new()
+	panel.add_theme_stylebox_override("panel", style)
+	panel.anchor_right = 1.0
+	panel.custom_minimum_size = Vector2(0, 140)
+	panel.offset_bottom = 140
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(panel)
 	_title = _label(28, Color(1, 1, 1, 0.92), Vector2(0, 54), HORIZONTAL_ALIGNMENT_CENTER)
 	_sub = _label(19, Color(1, 1, 1, 0.55), Vector2(0, 92), HORIZONTAL_ALIGNMENT_CENTER)
 	_verdict = _label(44, Color(1, 0.86, 0.55, 0), Vector2(0, 520), HORIZONTAL_ALIGNMENT_CENTER)

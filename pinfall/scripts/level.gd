@@ -25,6 +25,7 @@ var pins: Array[Node3D] = []
 var _won := false
 var _lost := false
 var _hud: CanvasLayer
+var _juice: Node
 
 ## Levels are DATA. gates = (height, x of the hole); goal_x = which side the crucible sits on;
 ## needed = drops required. Adding a level is a row here, not a scene file.
@@ -90,10 +91,20 @@ func _build_vessels() -> void:
 	add_child(drain)
 
 
+func _on_pin_out(_i: int) -> void:
+	## The kick lands when the pin CLEARS, not when the drag starts — the release is the moment
+	## the player caused something, and feedback on the wrong frame reads as lag.
+	_juice.kick(0.16)
+
+
 func _on_win() -> void:
 	if _lost:
 		return
 	_won = true
+	_juice.kick(0.30)
+	var sparks := preload("res://scripts/juice.gd")
+	sparks.sparks(self, Vector3(LEVELS[level_index]["goal_x"], -1.2, 0.55),
+		Color(1.0, 0.72, 0.3), 46)
 	_hud.verdict("Poured", true)
 
 
@@ -182,6 +193,9 @@ func _build_environment() -> void:
 	cam.rotation_degrees = Vector3(-4, 0, 0)
 	cam.fov = 50.0
 	add_child(cam)
+	_juice = preload("res://scripts/juice.gd").new()
+	add_child(_juice)
+	_juice.bind(cam)
 
 
 func _slab(size: Vector3, pos: Vector3, mat: StandardMaterial3D) -> StaticBody3D:
@@ -280,6 +294,7 @@ func _build_pins() -> void:
 				Vector3(HALF - right_w * 0.5, y, 0.55), shelf)
 		var pin := preload("res://scripts/pin.gd").new()
 		pin.setup(Vector3(hx, y, 0.55), 1.9, mat, i)
+		pin.pulled_out.connect(_on_pin_out)
 		add_child(pin)
 		pins.append(pin)
 
