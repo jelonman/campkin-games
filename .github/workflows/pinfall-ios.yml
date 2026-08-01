@@ -91,9 +91,14 @@ jobs:
           bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!;
                     wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
           LIMIT=780
+          echo "--- export templates the engine can see ---"
+          ls -la "$HOME/Library/Application Support/Godot/export_templates/"*/ | head -20
+          echo "--- preset as the runner reads it ---"
+          cat pinfall/export_presets.cfg
           bound ./Godot.app/Contents/MacOS/Godot --headless --path pinfall \
             --export-debug "iOS" export/Pinfall.ipa > export.log 2>&1 || true
-          tail -30 export.log
+          echo "--- full export log ---"
+          cat export.log
           ls -la pinfall/export || true
           test -d pinfall/export/Pinfall.xcodeproj || test -f pinfall/export/Pinfall.ipa || \
             (echo "no Xcode project or ipa produced" && ls -R pinfall/export && exit 1)
