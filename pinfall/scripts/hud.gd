@@ -64,7 +64,7 @@ func set_level(n: int, needed: int, stars := 0, best := 0) -> void:
 		tail += "  ·  %d clean" % stars
 	if best > 0:
 		tail += "  ·  best %d pins" % best
-	_sub.text = "Get %d drops into the crucible%s" % [needed, tail]
+	_sub.text = "Pour %d lava into the vault, not the pit%s" % [needed, tail]
 
 
 func verdict(text: String, good: bool) -> void:

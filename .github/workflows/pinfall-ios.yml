@@ -18,19 +18,15 @@ name: iOS build
 # compile is verified on every push; signing is a second workflow once the record exists.
 
 on:
-  # push trigger DISABLED 2026-08-01 until there is a signing identity to test against. The
-  # export refuses with an empty reason and the remaining candidate needs an App Store Connect
-  # app record, which only the owner can create. Iterating on a blank error across a 10x-billed
-  # runner is the thing to stop doing, not repeat. Re-enable by uncommenting the push block.
   workflow_dispatch:
-  # push:
+  push:
     # ⛔ Root-relative. The project lives in pinfall/, so "export_presets.cfg" matched NOTHING
     # and a push that changed the icons and the team id triggered no build at all — while a
     # monitor watching "the latest run" happily reported the PREVIOUS run's failure as if it
     # were the new one. A filter that silently matches nothing is worse than no filter.
-  #   paths:
-  #     - "pinfall/**"
-  #     - ".github/workflows/pinfall-ios.yml"
+    paths:
+      - "pinfall/**"
+      - ".github/workflows/pinfall-ios.yml"
 
 jobs:
   ios:

@@ -21,6 +21,10 @@ OUT = os.path.join(HERE, "art", "icons")
 
 # iPhone-only (targeted_device_family=1) plus the App Store icon, which is always required.
 SIZES = {
+    # Android launcher icons must be these exact sizes; Godot validates them and refuses the
+    # export rather than scaling on your behalf.
+    "icon_432.png": 432,
+    "icon_192.png": 192,
     "icon_1024.png": 1024,
     "icon_180.png": 180,
     "icon_120.png": 120,

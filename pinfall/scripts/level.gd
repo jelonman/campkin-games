@@ -13,13 +13,14 @@ extends Node3D
 ## than a flat blue rectangle. Nothing in this file is an untextured primitive.
 
 const TEX := "res://art/textures/%s/%s.jpg"
+const Look := preload("res://scripts/look.gd")
 
 ## The fluid is granular on purpose. Real fluid simulation is out of budget on a phone, and the
 ## ad games this is modelled on all use exactly this trick: enough small rigid bodies that the
 ## mass reads as a liquid when it pours. 140 is where it stops looking countable on a 1080p
 ## phone screen and before the 120 Hz physics tick starts costing frames.
 const DROPS := 140
-const DROP_RADIUS := 0.085
+const DROP_RADIUS := 0.115
 
 var pins: Array[Node3D] = []
 var _won := false
@@ -50,6 +51,7 @@ func _ready() -> void:
 	_build_chamber()
 	_build_pins()
 	_build_vessels()
+	_build_hero()
 	_build_fluid()
 	_hud = preload("res://scripts/hud.gd").new()
 	add_child(_hud)
@@ -75,18 +77,9 @@ func _build_vessels() -> void:
 	var lvl: Dictionary = LEVELS[level_index]
 	var gx: float = lvl["goal_x"]
 
-	var goal_mat := StandardMaterial3D.new()
-	goal_mat.albedo_color = Color(0.30, 0.24, 0.20)
-	goal_mat.emission_enabled = true
-	goal_mat.emission = Color(1.0, 0.55, 0.18)
-	goal_mat.emission_energy_multiplier = 0.9
-	goal_mat.roughness = 0.4
-	goal_mat.metallic = 0.6
+	var goal_mat := Look.metal(Look.GOLD)
 
-	var drain_mat := StandardMaterial3D.new()
-	drain_mat.albedo_color = Color(0.06, 0.07, 0.09)
-	drain_mat.roughness = 0.95
-	drain_mat.metallic = 0.0
+	var drain_mat := Look.toon(Color(0.16, 0.14, 0.18), 0.3)
 
 	var goal := preload("res://scripts/goal.gd").new()
 	goal.setup(Vector3(gx, -1.75, 0.55), Vector3(1.7, 1.1, 1.3), true, int(lvl["needed"]), goal_mat)
@@ -115,7 +108,7 @@ func _on_win() -> void:
 	sparks.sparks(self, Vector3(LEVELS[level_index]["goal_x"], -1.2, 0.55),
 		Color(1.0, 0.72, 0.3), 46)
 	var improved: bool = _save.record_win(level_index, _pins_pulled, not _spilled_any)
-	_hud.verdict("Poured" if not improved else "Poured — best yet", true)
+	_hud.verdict("Rescued!" if not improved else "Rescued — best yet", true)
 
 
 func _on_lose() -> void:
@@ -123,7 +116,7 @@ func _on_lose() -> void:
 		return
 	_lost = true
 	_spilled_any = true
-	_hud.verdict("Spilled", false)
+	_hud.verdict("Too much spilled", false)
 
 
 func _pbr(role: String, uv_scale: float = 1.0, metal_hint := 0.0) -> StandardMaterial3D:
@@ -160,24 +153,24 @@ func _build_environment() -> void:
 	## grey cardboard against the wall — with a single light, a cylinder has no silhouette.
 	var env := Environment.new()
 	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color(0.10, 0.12, 0.18)
-	sky_mat.sky_horizon_color = Color(0.22, 0.18, 0.16)
-	sky_mat.ground_bottom_color = Color(0.04, 0.04, 0.05)
-	sky_mat.ground_horizon_color = Color(0.14, 0.12, 0.12)
+	sky_mat.sky_top_color = Color(0.16, 0.36, 0.58)
+	sky_mat.sky_horizon_color = Color(0.52, 0.62, 0.72)
+	sky_mat.ground_bottom_color = Color(0.18, 0.21, 0.30)
+	sky_mat.ground_horizon_color = Color(0.28, 0.34, 0.46)
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.55
+	env.ambient_light_energy = 1.6
 	# Glow makes the fluid read as molten rather than as painted spheres. Cheap on mobile
 	# because only the emissive drops exceed the threshold.
 	env.glow_enabled = true
-	env.glow_intensity = 0.55
+	env.glow_intensity = 0.85
 	env.glow_bloom = 0.15
-	env.glow_hdr_threshold = 1.0
+	env.glow_hdr_threshold = 0.85
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
-	env.tonemap_white = 1.6
+	env.tonemap_white = 3.2
 	env.ssao_enabled = false      # mobile renderer: not available, and asking for it costs nothing but a warning
 
 	var world := WorldEnvironment.new()
@@ -185,19 +178,27 @@ func _build_environment() -> void:
 	add_child(world)
 
 	var key := DirectionalLight3D.new()
-	key.light_energy = 1.45
-	key.light_color = Color(1.0, 0.94, 0.86)
+	key.light_energy = 1.5
+	key.light_color = Color(1.0, 0.96, 0.90)
 	key.shadow_enabled = true
+	key.shadow_opacity = 0.35
 	key.directional_shadow_mode = DirectionalLight3D.SHADOW_ORTHOGONAL
 	key.rotation_degrees = Vector3(-52, -36, 0)
 	add_child(key)
 
 	var rim := DirectionalLight3D.new()
-	rim.light_energy = 0.55
+	rim.light_energy = 0.75
 	rim.light_color = Color(0.45, 0.62, 1.0)
 	rim.shadow_enabled = false
 	rim.rotation_degrees = Vector3(-18, 148, 0)
 	add_child(rim)
+
+	var bounce := DirectionalLight3D.new()
+	bounce.light_energy = 0.7
+	bounce.light_color = Color(0.62, 0.74, 1.0)
+	bounce.shadow_enabled = false
+	bounce.rotation_degrees = Vector3(58, 18, 0)
+	add_child(bounce)
 
 	var cam := Camera3D.new()
 	cam.position = Vector3(0, 1.55, 11.2)
@@ -228,8 +229,8 @@ func _slab(size: Vector3, pos: Vector3, mat: StandardMaterial3D) -> StaticBody3D
 
 
 func _build_chamber() -> void:
-	var wall := _pbr("wall", 2.0)
-	var floor_mat := _pbr("floor", 3.0)
+	var wall := Look.toon(Look.STONE, 0.5)
+	var floor_mat := Look.toon(Look.STONE_DARK, 0.4)
 	# Back plate, floor, and two side walls. UV scale differs per surface so the tiling repeat
 	# never lines up across an edge, which is the tell that gives away a texture atlas.
 	_slab(Vector3(6.4, 8.2, 0.4), Vector3(0, 1.9, -0.2), wall)
@@ -248,7 +249,7 @@ func _build_chamber() -> void:
 	_slab(Vector3(0.5, 8.2, 3.6), Vector3(-3.05, 1.9, 0.55), wall)
 	_slab(Vector3(0.5, 8.2, 3.6), Vector3(3.05, 1.9, 0.55), wall)
 	# The funnel that gives the fluid somewhere to go, and the puzzle its shape.
-	var accent := _pbr("accent", 1.4, 1.0)
+	var accent := Look.toon(Color(0.30, 0.50, 0.68), 0.35)
 	var left := _slab(Vector3(2.6, 0.35, 1.5), Vector3(-1.35, -0.75, 0.55), accent)
 	left.rotation_degrees = Vector3(0, 0, -17)
 	var right := _slab(Vector3(2.6, 0.35, 1.5), Vector3(1.35, -0.75, 0.55), accent)
@@ -260,26 +261,8 @@ func _build_pins() -> void:
 	## space with metre-wide gaps between them, so the fluid poured straight past every one and
 	## the level looked finished while doing nothing. That is the whole mechanic: a solid shelf
 	## with a hole in it, and a pin filling the hole. Pull the pin, the hole opens, the fluid goes.
-	var shelf := _pbr("accent", 1.2, 1.0)
-	var mat := StandardMaterial3D.new()
-	# Deliberately NOT the scanned metal here. The pin is the one thing the player must find in
-	# under a second, and a faithful corroded-steel scan loses that fight against a concrete wall
-	# every time. Clean machined metal is the right call even though it is the less "real" one.
-	# ⛔ metallic = 1.0 rendered these BLACK, which is correct PBR and wrong art. A fully metallic
-	# surface has no diffuse response at all: it shows only what it reflects, and on the mobile
-	# renderer in a closed concrete room there is almost nothing to reflect. The fix is not more
-	# light, it is less metal — a brushed-alloy response that still takes the key light.
-	mat.albedo_color = Color(0.78, 0.81, 0.88)
-	mat.metallic = 0.35
-	mat.metallic_specular = 0.85
-	mat.roughness = 0.30
-	# A faint self-lit edge so the pin separates from the shelf it is plugged into even when the
-	# key light is behind it. This is the only emissive object besides the fluid, on purpose.
-	mat.emission_enabled = true
-	mat.emission = Color(0.30, 0.36, 0.46)
-	mat.emission_energy_multiplier = 0.35
-	mat.rim_enabled = true
-	mat.rim = 0.7
+	var shelf := Look.toon(Look.STONE_DARK, 0.55)
+	var mat := Look.metal(Look.STEEL)
 
 	# Each gate: a y height, and the x centre of the hole the pin plugs. The shelf is built as
 	# two segments either side, so the hole is real geometry rather than a gap that only exists
@@ -310,15 +293,60 @@ func _build_pins() -> void:
 		pins.append(pin)
 
 
+func _build_hero() -> void:
+	## A chunky stylised figure standing in the goal, waiting. Deliberately simple shapes: at
+	## phone size a detailed character is mush, and the silhouette is doing all the work.
+	var lvl: Dictionary = LEVELS[level_index]
+	var gx: float = lvl["goal_x"]
+	var root := Node3D.new()
+	root.position = Vector3(gx, -1.95, 0.95)
+	add_child(root)
+
+	var cloth := Look.toon(Look.HERO_CLOTH, 0.7)
+	var skin := Look.toon(Look.HERO_SKIN, 0.6)
+
+	var body := MeshInstance3D.new()
+	var caps := CapsuleMesh.new()
+	caps.radius = 0.24
+	caps.height = 0.74
+	body.mesh = caps
+	body.material_override = cloth
+	body.position = Vector3(0, 0.30, 0)
+	root.add_child(body)
+
+	var head := MeshInstance3D.new()
+	var sph := SphereMesh.new()
+	sph.radius = 0.20
+	sph.height = 0.40
+	head.mesh = sph
+	head.material_override = skin
+	head.position = Vector3(0, 0.80, 0)
+	root.add_child(head)
+
+	for side in [-1.0, 1.0]:
+		var arm := MeshInstance3D.new()
+		var ac := CapsuleMesh.new()
+		ac.radius = 0.085
+		ac.height = 0.42
+		arm.mesh = ac
+		arm.material_override = skin
+		arm.position = Vector3(side * 0.27, 0.46, 0)
+		# Arms up. It reads as "help" from across the room, which is the entire point of
+		# putting a figure in the frame at all.
+		arm.rotation_degrees = Vector3(0, 0, side * 38.0)
+		root.add_child(arm)
+
+
 func _build_fluid() -> void:
 	## Emissive, heavy, slightly bouncy. Emission is what makes 140 spheres read as one molten
 	## mass under the glow pass instead of as 140 separate balls.
 	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.38, 0.10)
+	mat.albedo_color = Look.LAVA
+	mat.albedo_color = Color(1.0, 0.30, 0.10)
 	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.42, 0.08)
-	mat.emission_energy_multiplier = 2.6
-	mat.roughness = 0.25
+	mat.emission = Color(1.0, 0.34, 0.06)
+	mat.emission_energy_multiplier = 1.15
+	mat.roughness = 0.45
 	mat.metallic = 0.0
 
 	var sphere := SphereMesh.new()
