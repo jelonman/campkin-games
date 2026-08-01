@@ -20,11 +20,13 @@ name: iOS build
 on:
   workflow_dispatch:
   push:
+    # ⛔ Root-relative. The project lives in pinfall/, so "export_presets.cfg" matched NOTHING
+    # and a push that changed the icons and the team id triggered no build at all — while a
+    # monitor watching "the latest run" happily reported the PREVIOUS run's failure as if it
+    # were the new one. A filter that silently matches nothing is worse than no filter.
     paths:
-      - "**.gd"
-      - "project.godot"
-      - "export_presets.cfg"
-      - ".github/workflows/ios.yml"
+      - "pinfall/**"
+      - ".github/workflows/pinfall-ios.yml"
 
 jobs:
   ios:
