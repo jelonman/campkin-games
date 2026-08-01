@@ -100,17 +100,27 @@ jobs:
           echo "--- full export log ---"
           cat export.log
           ls -la pinfall/export || true
-          test -d pinfall/export/Pinfall.xcodeproj || test -f pinfall/export/Pinfall.ipa || \
-            (echo "no Xcode project or ipa produced" && ls -R pinfall/export && exit 1)
+          # Godot exits non-zero after writing the Xcode project because it cannot also sign an
+          # .ipa here. Judge the step by the ARTEFACT, which is what the next step consumes.
+          test -d pinfall/export/Pinfall.xcodeproj || \
+            (echo "no Xcode project produced" && ls -R pinfall/export && exit 1)
+          echo "Xcode project present"
 
       - name: Compile the generated project (unsigned)
         run: |
           set -euo pipefail
           cd pinfall/export
-          xcodebuild -project Pinfall.xcodeproj -scheme Pinfall \
+          # Godot emits a TARGET, not a scheme, and -scheme on a project without shared schemes
+          # fails with the misleading "Unable to read project". Ask the project what it has
+          # instead of assuming, then build that.
+          xcodebuild -list -project Pinfall.xcodeproj || true
+          TARGET=$(xcodebuild -list -project Pinfall.xcodeproj 2>/dev/null \
+                   | awk '/Targets:/{f=1;next} /^$/{f=0} f{print $1; exit}')
+          echo "building target: ${TARGET:-Pinfall}"
+          xcodebuild -project Pinfall.xcodeproj -target "${TARGET:-Pinfall}" \
             -configuration Debug -sdk iphoneos \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            build | tail -25
+            build 2>&1 | tail -30
 
       - uses: actions/upload-artifact@v4
         with:
