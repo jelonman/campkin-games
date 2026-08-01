@@ -1,5 +1,11 @@
 name: iOS build
 
+# ⛔ The project lives in pinfall/, not at the repo root. Every Godot invocation here MUST say
+# so. Getting this wrong is not a clean error: Godot with no project.godot in reach opens the
+# PROJECT MANAGER, which on a runner with no display and no tty waits forever — that is the
+# 32-minute silent hang, not Gatekeeper. The bounded second run surfaced the real message in
+# seven minutes: "Can't run project: no main scene defined in the project."
+
 # Why a runner and not this box: Godot can export an iOS Xcode project from Linux, but only
 # macOS can compile and sign one, and there is no Mac here. The repo already proved this shape
 # works for the Capacitor games (run 30557440973 green on three targets), so the same lane is
@@ -49,6 +55,7 @@ jobs:
           chmod +x Godot.app/Contents/MacOS/Godot
           # Prove the binary actually starts before spending the rest of the job on it.
           ./Godot.app/Contents/MacOS/Godot --version
+          test -f pinfall/project.godot || (echo 'project.godot NOT at pinfall/ — fix --path' && ls -R . | head -30 && exit 1)
 
       - name: Import assets
         run: |
@@ -69,30 +76,30 @@ jobs:
           bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!;
                     wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
           LIMIT=420
-          bound ./Godot.app/Contents/MacOS/Godot --headless --path . --import > import.log 2>&1 || true
+          bound ./Godot.app/Contents/MacOS/Godot --headless --path pinfall --import > import.log 2>&1 || true
           tail -25 import.log
           echo "--- imported resources ---"
-          ls .godot/imported 2>/dev/null | head -20
-          test -d .godot/imported || (echo "IMPORT PRODUCED NOTHING" && exit 1)
+          ls pinfall/.godot/imported 2>/dev/null | head -20
+          test -d pinfall/.godot/imported || (echo "IMPORT PRODUCED NOTHING" && exit 1)
 
       - name: Export the Xcode project
         run: |
           set -euo pipefail
-          mkdir -p export
+          mkdir -p pinfall/export
           bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!;
                     wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
           LIMIT=780
-          bound ./Godot.app/Contents/MacOS/Godot --headless --path . \
+          bound ./Godot.app/Contents/MacOS/Godot --headless --path pinfall \
             --export-debug "iOS" export/Pinfall.ipa > export.log 2>&1 || true
           tail -30 export.log
-          ls -la export || true
-          test -d export/Pinfall.xcodeproj || test -f export/Pinfall.ipa || \
-            (echo "no Xcode project or ipa produced" && ls -R export && exit 1)
+          ls -la pinfall/export || true
+          test -d pinfall/export/Pinfall.xcodeproj || test -f pinfall/export/Pinfall.ipa || \
+            (echo "no Xcode project or ipa produced" && ls -R pinfall/export && exit 1)
 
       - name: Compile the generated project (unsigned)
         run: |
           set -euo pipefail
-          cd export
+          cd pinfall/export
           xcodebuild -project Pinfall.xcodeproj -scheme Pinfall \
             -configuration Debug -sdk iphoneos \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
@@ -101,5 +108,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pinfall-ios-project
-          path: export/
+          path: pinfall/export/
           retention-days: 7

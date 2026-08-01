@@ -26,6 +26,9 @@ var _won := false
 var _lost := false
 var _hud: CanvasLayer
 var _juice: Node
+var _save: Node
+var _pins_pulled := 0
+var _spilled_any := false
 
 ## Levels are DATA. gates = (height, x of the hole); goal_x = which side the crucible sits on;
 ## needed = drops required. Adding a level is a row here, not a scene file.
@@ -38,7 +41,11 @@ var level_index := 0
 
 
 func _ready() -> void:
-	level_index = clampi(int(Engine.get_meta("pinfall_level", 0)), 0, LEVELS.size() - 1)
+	_save = preload("res://scripts/save.gd").new()
+	add_child(_save)
+	# Resume where they left off rather than at level 1. A returning player landing back on a
+	# level they already beat is the fastest way to lose them on day two.
+	level_index = clampi(int(Engine.get_meta("pinfall_level", _save.level)), 0, LEVELS.size() - 1)
 	_build_environment()
 	_build_chamber()
 	_build_pins()
@@ -46,7 +53,8 @@ func _ready() -> void:
 	_build_fluid()
 	_hud = preload("res://scripts/hud.gd").new()
 	add_child(_hud)
-	_hud.set_level(level_index + 1, LEVELS[level_index]["needed"])
+	_hud.set_level(level_index + 1, int(LEVELS[level_index]["needed"]),
+		_save.stars, int(_save.best.get(level_index, 0)))
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -58,7 +66,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		or (event is InputEventScreenTouch and event.pressed)
 	if tapped:
 		Engine.set_meta("pinfall_level",
-			(level_index + 1) % LEVELS.size() if _won else level_index)
+			mini(level_index + 1, LEVELS.size() - 1) if _won else level_index)
 		get_tree().reload_current_scene()
 
 
@@ -92,6 +100,7 @@ func _build_vessels() -> void:
 
 
 func _on_pin_out(_i: int) -> void:
+	_pins_pulled += 1
 	## The kick lands when the pin CLEARS, not when the drag starts — the release is the moment
 	## the player caused something, and feedback on the wrong frame reads as lag.
 	_juice.kick(0.16)
@@ -105,13 +114,15 @@ func _on_win() -> void:
 	var sparks := preload("res://scripts/juice.gd")
 	sparks.sparks(self, Vector3(LEVELS[level_index]["goal_x"], -1.2, 0.55),
 		Color(1.0, 0.72, 0.3), 46)
-	_hud.verdict("Poured", true)
+	var improved: bool = _save.record_win(level_index, _pins_pulled, not _spilled_any)
+	_hud.verdict("Poured" if not improved else "Poured — best yet", true)
 
 
 func _on_lose() -> void:
 	if _won:
 		return
 	_lost = true
+	_spilled_any = true
 	_hud.verdict("Spilled", false)
 
 

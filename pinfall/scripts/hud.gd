@@ -55,9 +55,16 @@ func _label(size: int, colour: Color, offset: Vector2, align: int) -> Label:
 	return l
 
 
-func set_level(n: int, needed: int) -> void:
+func set_level(n: int, needed: int, stars := 0, best := 0) -> void:
 	_title.text = "Level %d" % n
-	_sub.text = "Get %d drops into the crucible" % needed
+	# The returning player needs to see, in the first frame, that the app remembers them. A bare
+	# objective line reads identically on a first launch and a fiftieth.
+	var tail := ""
+	if stars > 0:
+		tail += "  ·  %d clean" % stars
+	if best > 0:
+		tail += "  ·  best %d pins" % best
+	_sub.text = "Get %d drops into the crucible%s" % [needed, tail]
 
 
 func verdict(text: String, good: bool) -> void:
