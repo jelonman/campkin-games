@@ -1,36 +1,34 @@
 name: iOS build
 
-# ⛔ The project lives in pinfall/, not at the repo root. Every Godot invocation here MUST say
-# so. Getting this wrong is not a clean error: Godot with no project.godot in reach opens the
-# PROJECT MANAGER, which on a runner with no display and no tty waits forever — that is the
-# 32-minute silent hang, not Gatekeeper. The bounded second run surfaced the real message in
-# seven minutes: "Can't run project: no main scene defined in the project."
-
-# Why a runner and not this box: Godot can export an iOS Xcode project from Linux, but only
-# macOS can compile and sign one, and there is no Mac here. The repo already proved this shape
-# works for the Capacitor games (run 30557440973 green on three targets), so the same lane is
-# reused rather than invented.
+# Two jobs, and the split is the whole point.
 #
-# Signing is deliberately left OFF in this workflow. The App Store Connect API key on the box
-# can create bundle ids and read certificates, but Apple does not allow app-record creation
-# over the API at all ("The resource 'apps' does not allow 'CREATE'"), so a signed upload needs
-# the app record to exist first. This builds and archives the unsigned Xcode project so the
-# compile is verified on every push; signing is a second workflow once the record exists.
+# Godot's iOS exporter writes its Xcode project from a template full of placeholders
+# ($pbx_embeded_frameworks, $additional_pbx_files, $additional_pbx_resources_refs and three
+# more). On Linux it substitutes all six. On a macos-14 runner it leaves them RAW in the file,
+# which is why every Xcode from 15.0.1 to 15.4 answered "The project 'Pinfall' is damaged and
+# cannot be opened due to a parse error" — a bare $placeholder where a value belongs is not
+# valid OpenStep plist. Proven by diff, not guessed: the two files are byte-identical apart
+# from those six lines, 15,864 bytes against 16,032.
+#
+# So Godot never runs on the Mac again. Linux exports the Xcode project and hands it over as an
+# artifact; the Mac does the one thing only a Mac can do, which is compile it. Linux minutes
+# also bill at 1x against the Mac's 10x, so the expensive runner now holds the job for the
+# shortest time it possibly can.
 
 on:
   workflow_dispatch:
   push:
-    # ⛔ Root-relative. The project lives in pinfall/, so "export_presets.cfg" matched NOTHING
-    # and a push that changed the icons and the team id triggered no build at all — while a
-    # monitor watching "the latest run" happily reported the PREVIOUS run's failure as if it
-    # were the new one. A filter that silently matches nothing is worse than no filter.
+    # Root-relative. The project lives in pinfall/, so "export_presets.cfg" matched NOTHING and
+    # a push that changed the icons and the team id triggered no build at all, while a monitor
+    # watching "the latest run" reported the PREVIOUS run's failure as if it were the new one.
+    # A filter that silently matches nothing is worse than no filter.
     paths:
       - "pinfall/**"
       - ".github/workflows/pinfall-ios.yml"
 
 jobs:
-  ios:
-    runs-on: macos-14
+  export:
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -40,116 +38,94 @@ jobs:
           set -euo pipefail
           V=4.6.3-stable
           curl -sSL -o godot.zip \
-            "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_macos.universal.zip"
+            "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_linux.x86_64.zip"
           curl -sSL -o templates.tpz \
             "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_export_templates.tpz"
           unzip -q godot.zip
+          chmod +x Godot_v${V}_linux.x86_64
           # The engine looks for templates under a version-named directory; the archive unpacks
           # to a generic 'templates' folder, so it has to be moved rather than just extracted.
-          mkdir -p "$HOME/Library/Application Support/Godot/export_templates"
+          mkdir -p "$HOME/.local/share/godot/export_templates"
           unzip -q templates.tpz -d /tmp/tpl
-          mv /tmp/tpl/templates "$HOME/Library/Application Support/Godot/export_templates/${V/-/.}"
-          ls "$HOME/Library/Application Support/Godot/export_templates/"
-          # ⛔ Gatekeeper. An .app downloaded with curl carries com.apple.quarantine, and macOS
-          # then stalls the first launch instead of refusing it. The same import runs in 3.1
-          # seconds on Linux and hung for 32 minutes here with no output — measured, not guessed.
-          xattr -dr com.apple.quarantine Godot.app || true
-          chmod +x Godot.app/Contents/MacOS/Godot
-          # Prove the binary actually starts before spending the rest of the job on it.
-          ./Godot.app/Contents/MacOS/Godot --version
-          test -f pinfall/project.godot || (echo 'project.godot NOT at pinfall/ — fix --path' && ls -R . | head -30 && exit 1)
+          mv /tmp/tpl/templates "$HOME/.local/share/godot/export_templates/${V/-/.}"
+          ./Godot_v${V}_linux.x86_64 --version || true
+          test -f pinfall/project.godot || (echo 'project.godot NOT at pinfall/' && ls -R . | head -30 && exit 1)
 
       - name: Import assets
         run: |
           set -euo pipefail
-          # --headless --quit does NOT import. That cost a render of pure white on 2026-08-01:
-          # every material fell back to untextured because the .import files did not exist.
-          #
-          # EVERY godot invocation here is wrapped in `timeout`. The first version of this
-          # workflow had none, and the import step hung for 32 minutes on a macOS runner (which
-          # bills at 10x) with no output and no way to see where it was. A CI step that can hang
-          # without a deadline is a bill, not a build.
-          #
-          # `< /dev/null` matters as much as the timeout: a Godot that hits any prompt on a
-          # runner with no tty waits forever on stdin, and that is the most likely explanation
-          # for a silent 32-minute import of thirteen JPEGs.
-          # `timeout` is GNU coreutils and is NOT on a stock macOS runner, so a workflow that
-          # relies on it silently loses its own deadline. Portable watchdog instead.
-          bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!;
-                    wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
-          LIMIT=420
-          bound ./Godot.app/Contents/MacOS/Godot --headless --path pinfall --import > import.log 2>&1 || true
-          tail -25 import.log
-          echo "--- imported resources ---"
-          ls pinfall/.godot/imported 2>/dev/null | head -20
+          # --headless --quit does NOT import. That cost a render of pure white: every material
+          # fell back to untextured because the .import files did not exist. And every Godot
+          # call is bounded, because a Godot that hits a prompt with no tty waits forever —
+          # that is the 32-minute silent hang, not slowness.
+          timeout 420 ./Godot_v4.6.3-stable_linux.x86_64 --headless --path pinfall --import \
+            < /dev/null > import.log 2>&1 || true
+          tail -20 import.log
           test -d pinfall/.godot/imported || (echo "IMPORT PRODUCED NOTHING" && exit 1)
 
       - name: Export the Xcode project
         run: |
           set -euo pipefail
           mkdir -p pinfall/export
-          bound() { "$@" < /dev/null & p=$!; ( sleep "$LIMIT"; kill -9 $p 2>/dev/null ) & w=$!;
-                    wait $p; rc=$?; kill $w 2>/dev/null; return $rc; }
-          LIMIT=780
-          echo "--- export templates the engine can see ---"
-          ls -la "$HOME/Library/Application Support/Godot/export_templates/"*/ | head -20
-          echo "--- preset as the runner reads it ---"
-          cat pinfall/export_presets.cfg
-          bound ./Godot.app/Contents/MacOS/Godot --headless --path pinfall \
-            --export-debug "iOS" export/Pinfall.ipa > export.log 2>&1 || true
-          echo "--- full export log ---"
-          cat export.log
-          ls -la pinfall/export || true
+          timeout 780 ./Godot_v4.6.3-stable_linux.x86_64 --headless --path pinfall \
+            --export-debug "iOS" export/Pinfall.ipa < /dev/null > export.log 2>&1 || true
+          tail -20 export.log
           # Godot exits non-zero after writing the Xcode project because it cannot also sign an
-          # .ipa here. Judge the step by the ARTEFACT, which is what the next step consumes.
+          # .ipa here. Judge the step by the ARTEFACT, which is what the next job consumes.
           test -d pinfall/export/Pinfall.xcodeproj || \
             (echo "no Xcode project produced" && ls -R pinfall/export && exit 1)
-          echo "Xcode project present"
-
-      - name: Prove what the pbxproj is, then compile with every Xcode until one reads it
-        run: |
-          set -uo pipefail
-          # Four runs blamed objectVersion 46 and pinned Xcode 15.0.1 on that guess. The guess was
-          # never tested: the SAME export writes 15,864 bytes on Linux that parse cleanly under a
-          # strict OpenStep-plist parser. So stop theorising and make the runner answer two
-          # questions in one job -- is the file this machine produced actually well formed, and
-          # does ANY installed Xcode open it.
-          F=pinfall/export/Pinfall.xcodeproj/project.pbxproj
-          echo "=== bytes ==="; wc -c "$F"
-          echo "=== lint (plutil understands OpenStep plists) ==="; plutil -lint "$F" || true
-          # The runner writes 16,032 bytes where Linux writes 15,864, and the Linux file parses.
-          # So the damage is in the 168 bytes macOS adds. Print the whole thing and diff it by
-          # eye rather than guessing a sixth time.
-          echo "=== EMPTY ASSIGNMENTS (a bare 'KEY = ;' is a parse error) ==="
-          grep -n '=[[:space:]]*;' "$F" || echo "none"
-          echo "=== full file ==="
-          cat -n "$F"
-          echo "=== what else is in the project bundle ==="; find pinfall/export/Pinfall.xcodeproj -type f -exec wc -c {} \;
-          cd pinfall/export
-          BUILT=""
-          for XC in $(ls -d /Applications/Xcode_16*.app /Applications/Xcode_15*.app /Applications/Xcode.app 2>/dev/null); do
-            echo "################ trying $XC"
-            sudo xcode-select -s "$XC/Contents/Developer" || continue
-            xcodebuild -version | head -1
-            if xcodebuild -list -project Pinfall.xcodeproj 2>&1 | tee list.log | grep -q "Targets:"; then
-              TARGET=$(awk '/Targets:/{f=1;next} /^$/{f=0} f{print $1; exit}' list.log)
-              echo "### $XC reads it. target: $TARGET"
-              xcodebuild -project Pinfall.xcodeproj -target "$TARGET" \
-                -configuration Debug -sdk iphoneos \
-                CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-                build 2>&1 | tail -40
-              # Judge by the artefact, never by the exit code of a piped command.
-              if find . -name "*.app" -maxdepth 6 | grep -q .; then BUILT="$XC"; break; fi
-            else
-              echo "### $XC cannot read it:"; tail -6 list.log
-            fi
-          done
-          test -n "$BUILT" || (echo "NO INSTALLED XCODE COULD BUILD IT" && exit 1)
-          echo "built with $BUILT"
-          find . -name "*.app" -maxdepth 6
+          # The failure this whole split exists to prevent. Assert it here, on the cheap runner,
+          # rather than discovering it as a parse error on the expensive one.
+          if grep -qE '\$(pbx_|additional_pbx_)' pinfall/export/Pinfall.xcodeproj/project.pbxproj; then
+            echo "UNSUBSTITUTED PLACEHOLDERS IN pbxproj:"
+            grep -nE '\$(pbx_|additional_pbx_)' pinfall/export/Pinfall.xcodeproj/project.pbxproj
+            exit 1
+          fi
+          echo "pbxproj is fully substituted:"; wc -c pinfall/export/Pinfall.xcodeproj/project.pbxproj
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pinfall-ios-project
+          name: pinfall-xcodeproj
           path: pinfall/export/
+          retention-days: 7
+
+  compile:
+    needs: export
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinfall-xcodeproj
+          path: export
+
+      - name: Compile the generated project (unsigned)
+        run: |
+          set -euo pipefail
+          # Signing is deliberately off. Apple does not allow app-record creation over the API
+          # ("The resource 'apps' does not allow 'CREATE'"), so a signed upload needs the record
+          # to exist first. It now does, 6797051442, and signing is a second workflow. This one
+          # proves the compile on every push, which is the thing that kept breaking.
+          xcodebuild -version
+          ls -la export/Pinfall.xcodeproj/
+          plutil -lint export/Pinfall.xcodeproj/project.pbxproj || true
+          cd export
+          xcodebuild -list -project Pinfall.xcodeproj | tee list.log
+          # Godot emits a TARGET, not a scheme, and -scheme on a project with no shared schemes
+          # fails with the same misleading "Unable to read project". Ask, do not assume.
+          TARGET=$(awk '/Targets:/{f=1;next} /^$/{f=0} f{print $1; exit}' list.log)
+          echo "building target: ${TARGET:-Pinfall}"
+          xcodebuild -project Pinfall.xcodeproj -target "${TARGET:-Pinfall}" \
+            -configuration Debug -sdk iphoneos -derivedDataPath dd \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build 2>&1 | tail -40
+          # Judge by the artefact. A piped xcodebuild hands back the exit code of `tail`.
+          APP=$(find dd -name "*.app" -maxdepth 6 | head -1)
+          test -n "$APP" || (echo "NO .app WAS PRODUCED" && exit 1)
+          echo "built: $APP"; du -sh "$APP"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinfall-ios-app
+          path: export/dd/Build/Products/
           retention-days: 7
