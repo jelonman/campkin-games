@@ -106,36 +106,42 @@ jobs:
             (echo "no Xcode project produced" && ls -R pinfall/export && exit 1)
           echo "Xcode project present"
 
-      - name: Compile the generated project (unsigned)
+      - name: Prove what the pbxproj is, then compile with every Xcode until one reads it
         run: |
-          set -euo pipefail
-          # Godot writes objectVersion = 46 into project.pbxproj -- Xcode 3.2 era. Recent Xcode
-          # refuses to open that at all and says only "Unable to read project", which is what
-          # every run has been reporting. Pick the oldest Xcode the runner has.
-          ls /Applications | grep -i "^Xcode" || true
-          XC=$(ls -d /Applications/Xcode_15*.app 2>/dev/null | sort | head -1)
-          if [ -n "$XC" ]; then sudo xcode-select -s "$XC/Contents/Developer"; fi
-          xcodebuild -version
-          # "JSON text did not start with array or object ... line 1, column 0" is xcodebuild
-          # saying the pbxproj is EMPTY or truncated, not that it is the wrong format. Locally
-          # the same export writes 15,864 well-formed bytes, so prove what the runner actually
-          # has before blaming Xcode again.
-          echo "--- pbxproj on this runner ---"
-          ls -la pinfall/export/Pinfall.xcodeproj/ || true
-          wc -c pinfall/export/Pinfall.xcodeproj/project.pbxproj || true
-          head -3 pinfall/export/Pinfall.xcodeproj/project.pbxproj || true
+          set -uo pipefail
+          # Four runs blamed objectVersion 46 and pinned Xcode 15.0.1 on that guess. The guess was
+          # never tested: the SAME export writes 15,864 bytes on Linux that parse cleanly under a
+          # strict OpenStep-plist parser. So stop theorising and make the runner answer two
+          # questions in one job -- is the file this machine produced actually well formed, and
+          # does ANY installed Xcode open it.
+          F=pinfall/export/Pinfall.xcodeproj/project.pbxproj
+          echo "=== bytes ==="; wc -c "$F"
+          echo "=== lint (plutil understands OpenStep plists) ==="; plutil -lint "$F" || true
+          echo "=== first and last 20 lines ==="; head -20 "$F"; echo "..."; tail -20 "$F"
+          echo "=== anything non-ASCII or a NUL? ==="; LC_ALL=C grep -n '[^ -~\t]' "$F" | head -5 || echo "clean ASCII"
+          echo "=== what else is in the project bundle ==="; find pinfall/export/Pinfall.xcodeproj -type f -exec wc -c {} \;
           cd pinfall/export
-          # Godot emits a TARGET, not a scheme, and -scheme on a project without shared schemes
-          # fails with the misleading "Unable to read project". Ask the project what it has
-          # instead of assuming, then build that.
-          xcodebuild -list -project Pinfall.xcodeproj || true
-          TARGET=$(xcodebuild -list -project Pinfall.xcodeproj 2>/dev/null \
-                   | awk '/Targets:/{f=1;next} /^$/{f=0} f{print $1; exit}')
-          echo "building target: ${TARGET:-Pinfall}"
-          xcodebuild -project Pinfall.xcodeproj -target "${TARGET:-Pinfall}" \
-            -configuration Debug -sdk iphoneos \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tail -30
+          BUILT=""
+          for XC in $(ls -d /Applications/Xcode_16*.app /Applications/Xcode_15*.app /Applications/Xcode.app 2>/dev/null); do
+            echo "################ trying $XC"
+            sudo xcode-select -s "$XC/Contents/Developer" || continue
+            xcodebuild -version | head -1
+            if xcodebuild -list -project Pinfall.xcodeproj 2>&1 | tee list.log | grep -q "Targets:"; then
+              TARGET=$(awk '/Targets:/{f=1;next} /^$/{f=0} f{print $1; exit}' list.log)
+              echo "### $XC reads it. target: $TARGET"
+              xcodebuild -project Pinfall.xcodeproj -target "$TARGET" \
+                -configuration Debug -sdk iphoneos \
+                CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+                build 2>&1 | tail -40
+              # Judge by the artefact, never by the exit code of a piped command.
+              if find . -name "*.app" -maxdepth 6 | grep -q .; then BUILT="$XC"; break; fi
+            else
+              echo "### $XC cannot read it:"; tail -6 list.log
+            fi
+          done
+          test -n "$BUILT" || (echo "NO INSTALLED XCODE COULD BUILD IT" && exit 1)
+          echo "built with $BUILT"
+          find . -name "*.app" -maxdepth 6
 
       - uses: actions/upload-artifact@v4
         with:
