@@ -11,6 +11,7 @@ config_version=5
 [application]
 
 config/name="Pinfall"
+config/icon="res://art/icons/icon_1024.png"
 config/description="Pull the pins in the right order. Physical liquid, real materials, one screen."
 run/main_scene="res://levels/level_01.tscn"
 config/features=PackedStringArray("4.6", "Mobile")
