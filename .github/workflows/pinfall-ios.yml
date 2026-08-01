@@ -111,11 +111,14 @@ jobs:
           plutil -lint export/Pinfall.xcodeproj/project.pbxproj || true
           cd export
           xcodebuild -list -project Pinfall.xcodeproj | tee list.log
-          # Godot emits a TARGET, not a scheme, and -scheme on a project with no shared schemes
-          # fails with the same misleading "Unable to read project". Ask, do not assume.
-          TARGET=$(awk '/Targets:/{f=1;next} /^$/{f=0} f{print $1; exit}' list.log)
-          echo "building target: ${TARGET:-Pinfall}"
-          xcodebuild -project Pinfall.xcodeproj -target "${TARGET:-Pinfall}" \
+          # Godot DOES ship a shared scheme (xcshareddata/xcschemes/Pinfall.xcscheme), which the
+          # earlier "-target, not a scheme" note got backwards. It matters: -derivedDataPath is
+          # rejected outright alongside -target ("The flag -scheme ... is required when
+          # specifying -derivedDataPath"), and without a known derived-data path there is no
+          # reliable place to look for the .app afterwards.
+          SCHEME=$(awk '/Schemes:/{f=1;next} /^$/{f=0} f{print $1; exit}' list.log)
+          echo "building scheme: ${SCHEME:-Pinfall}"
+          xcodebuild -project Pinfall.xcodeproj -scheme "${SCHEME:-Pinfall}" \
             -configuration Debug -sdk iphoneos -derivedDataPath dd \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
             build 2>&1 | tail -40
