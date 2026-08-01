@@ -106,6 +106,12 @@ jobs:
           # ("The resource 'apps' does not allow 'CREATE'"), so a signed upload needs the record
           # to exist first. It now does, 6797051442, and signing is a second workflow. This one
           # proves the compile on every push, which is the thing that kept breaking.
+          # Godot 4.6.3's iOS template is linked against the Xcode 16 Swift runtime. Under 15.4
+          # everything COMPILES and then the link dies on __swift_FORCE_LOAD_$_swift_Builtin_float,
+          # with SwiftUICore, _LocationEssentials and AudioUnit all "not found" beside it. Those
+          # are iOS 18 SDK libraries. Take the newest Xcode on the box, not the default.
+          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XC" ]; then sudo xcode-select -s "$XC/Contents/Developer"; fi
           xcodebuild -version
           ls -la export/Pinfall.xcodeproj/
           plutil -lint export/Pinfall.xcodeproj/project.pbxproj || true
