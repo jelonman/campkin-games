@@ -116,6 +116,14 @@ jobs:
           XC=$(ls -d /Applications/Xcode_15*.app 2>/dev/null | sort | head -1)
           if [ -n "$XC" ]; then sudo xcode-select -s "$XC/Contents/Developer"; fi
           xcodebuild -version
+          # "JSON text did not start with array or object ... line 1, column 0" is xcodebuild
+          # saying the pbxproj is EMPTY or truncated, not that it is the wrong format. Locally
+          # the same export writes 15,864 well-formed bytes, so prove what the runner actually
+          # has before blaming Xcode again.
+          echo "--- pbxproj on this runner ---"
+          ls -la pinfall/export/Pinfall.xcodeproj/ || true
+          wc -c pinfall/export/Pinfall.xcodeproj/project.pbxproj || true
+          head -3 pinfall/export/Pinfall.xcodeproj/project.pbxproj || true
           cd pinfall/export
           # Godot emits a TARGET, not a scheme, and -scheme on a project without shared schemes
           # fails with the misleading "Unable to read project". Ask the project what it has
