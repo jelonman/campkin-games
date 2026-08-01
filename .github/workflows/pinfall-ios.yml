@@ -117,8 +117,13 @@ jobs:
           F=pinfall/export/Pinfall.xcodeproj/project.pbxproj
           echo "=== bytes ==="; wc -c "$F"
           echo "=== lint (plutil understands OpenStep plists) ==="; plutil -lint "$F" || true
-          echo "=== first and last 20 lines ==="; head -20 "$F"; echo "..."; tail -20 "$F"
-          echo "=== anything non-ASCII or a NUL? ==="; LC_ALL=C grep -n '[^ -~\t]' "$F" | head -5 || echo "clean ASCII"
+          # The runner writes 16,032 bytes where Linux writes 15,864, and the Linux file parses.
+          # So the damage is in the 168 bytes macOS adds. Print the whole thing and diff it by
+          # eye rather than guessing a sixth time.
+          echo "=== EMPTY ASSIGNMENTS (a bare 'KEY = ;' is a parse error) ==="
+          grep -n '=[[:space:]]*;' "$F" || echo "none"
+          echo "=== full file ==="
+          cat -n "$F"
           echo "=== what else is in the project bundle ==="; find pinfall/export/Pinfall.xcodeproj -type f -exec wc -c {} \;
           cd pinfall/export
           BUILT=""
