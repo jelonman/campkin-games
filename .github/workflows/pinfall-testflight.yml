@@ -99,8 +99,13 @@ jobs:
           # timeout with no output — the runner-silence-is-a-prompt failure, in keychain form.
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KC" >/dev/null
           echo "identities:"; security find-identity -v -p codesigning "$KC"
-          security find-identity -v -p codesigning "$KC" | grep -q "iOS Distribution" \
-            || (echo "NO SIGNING IDENTITY IMPORTED" && exit 1)
+          # Apple issues the cert as "iOS Distribution" but macOS presents the SAME identity as
+          # "iPhone Distribution: Piotr Sarna (TEAM)". Grepping for the issuing name failed a
+          # build on a perfectly good keychain, so match on the SHA-1 and carry it forward —
+          # a hash cannot be renamed out from under the build.
+          ID_HASH=$(security find-identity -v -p codesigning "$KC" | awk '/Distribution/{print $2; exit}')
+          test -n "$ID_HASH" || (echo "NO SIGNING IDENTITY IMPORTED" && exit 1)
+          echo "SIGN_ID=$ID_HASH" >> "$GITHUB_ENV"
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "$PROFILE" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/Pinfall_Runner.mobileprovision
           rm -f id.p12
@@ -134,7 +139,7 @@ jobs:
             -configuration Release -sdk iphoneos -archivePath Pinfall.xcarchive \
             DEVELOPMENT_TEAM=4X59743R44 \
             CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="iOS Distribution" \
+            CODE_SIGN_IDENTITY="$SIGN_ID" \
             PROVISIONING_PROFILE_SPECIFIER=Pinfall_Runner \
             archive 2>&1 | tail -30
           test -d Pinfall.xcarchive || (echo "NO ARCHIVE PRODUCED" && exit 1)
