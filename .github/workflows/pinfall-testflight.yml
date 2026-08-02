@@ -71,7 +71,10 @@ jobs:
 
   ship:
     needs: export
-    runs-on: macos-14
+    # Apple rejects the upload outright below the iOS 26 SDK: "This app was built with the iOS
+    # 18.2 SDK. All iOS and iPadOS apps must be built with the iOS 26 SDK or later." macos-14
+    # tops out at Xcode 16.2, so the runner image itself is the blocker, not the build.
+    runs-on: macos-26
     timeout-minutes: 45
     steps:
       - uses: actions/download-artifact@v4
@@ -115,10 +118,13 @@ jobs:
           BUILD_NUMBER: ${{ inputs.build_number }}
         run: |
           set -euo pipefail
-          # Godot 4.6.3's template links against the Xcode 16 Swift runtime; under 15.x every
-          # file compiles and the link dies on __swift_FORCE_LOAD_$_swift_Builtin_float.
-          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          # Newest Xcode on the image, whatever it is. Pinning a major version is what put the
+          # last build on an SDK Apple no longer accepts; Godot's template needs at least the
+          # Xcode 16 Swift runtime, so newest-available satisfies both constraints at once.
+          ls /Applications | grep -i "^Xcode" || true
+          XC=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
           [ -n "$XC" ] && sudo xcode-select -s "$XC/Contents/Developer"
+          xcrun --sdk iphoneos --show-sdk-version
           xcodebuild -version
           cd export
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" Pinfall/Pinfall-Info.plist \
