@@ -1,0 +1,170 @@
+name: iOS TestFlight
+
+# Signed, archived and uploaded to App Store Connect. Manual signing on purpose.
+#
+# `-allowProvisioningUpdates` is the usual shortcut and it CANNOT work here: it asks Apple to
+# create a distribution certificate on the runner, and the account already holds three
+# `Apple Distribution` certs, which is Apple's ceiling. Getting under it would mean revoking one
+# that StreakMark or Rascal Naps signs with.
+#
+# So the identity was minted the other way round, on Linux, by `sign_identity.py`: generate the
+# keypair locally, send Apple only the CSR, keep the private key. That produced an
+# IOS_DISTRIBUTION cert (a separate quota, 1 of 3) plus the `Pinfall_Runner` App Store profile
+# bound to it. The runner therefore imports an identity it already owns and never asks Apple for
+# a new one — which is also why this workflow can run a hundred times without burning quota.
+#
+# Triggered by hand. The compile workflow proves every push; this one ships a build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: "CFBundleVersion to stamp (must be higher than the last upload)"
+        required: true
+        default: "1"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot and the iOS export templates
+        run: |
+          set -euo pipefail
+          V=4.6.3-stable
+          curl -sSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_linux.x86_64.zip"
+          curl -sSL -o templates.tpz \
+            "https://github.com/godotengine/godot/releases/download/${V}/Godot_v${V}_export_templates.tpz"
+          unzip -q godot.zip
+          chmod +x Godot_v${V}_linux.x86_64
+          mkdir -p "$HOME/.local/share/godot/export_templates"
+          unzip -q templates.tpz -d /tmp/tpl
+          mv /tmp/tpl/templates "$HOME/.local/share/godot/export_templates/${V/-/.}"
+
+      - name: Export the Xcode project (release)
+        run: |
+          set -euo pipefail
+          timeout 420 ./Godot_v4.6.3-stable_linux.x86_64 --headless --path pinfall --import \
+            < /dev/null > import.log 2>&1 || true
+          test -d pinfall/.godot/imported || (echo "IMPORT PRODUCED NOTHING" && exit 1)
+          mkdir -p pinfall/export
+          timeout 780 ./Godot_v4.6.3-stable_linux.x86_64 --headless --path pinfall \
+            --export-release "iOS" export/Pinfall.ipa < /dev/null > export.log 2>&1 || true
+          tail -20 export.log
+          test -d pinfall/export/Pinfall.xcodeproj || (echo "no Xcode project" && exit 1)
+          # An aborted Godot export still writes a pbxproj, with its template placeholders raw.
+          # Catching that here is the difference between a clear failure and "the project is
+          # damaged", which cost four runs on the 10x runner before.
+          if grep -qE '\$(pbx_|additional_pbx_)' pinfall/export/Pinfall.xcodeproj/project.pbxproj; then
+            grep -nE '\$(pbx_|additional_pbx_)' pinfall/export/Pinfall.xcodeproj/project.pbxproj
+            echo "UNSUBSTITUTED PLACEHOLDERS — the export aborted"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinfall-xcodeproj-release
+          path: pinfall/export/
+          retention-days: 7
+
+  ship:
+    needs: export
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinfall-xcodeproj-release
+          path: export
+
+      - name: Import the signing identity
+        env:
+          P12: ${{ secrets.IOS_DIST_P12_BASE64 }}
+          P12_PASS: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          PROFILE: ${{ secrets.IOS_PROFILE_BASE64 }}
+        run: |
+          set -euo pipefail
+          # A throwaway keychain, unlocked and made the default, so codesign can find the
+          # identity without a login-keychain password prompt that no one is there to answer.
+          KC=build.keychain
+          security create-keychain -p ci "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p ci "$KC"
+          security list-keychains -d user -s "$KC" login.keychain-db
+          echo "$P12" | base64 -d > id.p12
+          security import id.p12 -k "$KC" -P "$P12_PASS" -T /usr/bin/codesign -T /usr/bin/security
+          # Without this, codesign blocks on a GUI "allow access" dialog and the job hangs to its
+          # timeout with no output — the runner-silence-is-a-prompt failure, in keychain form.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci "$KC" >/dev/null
+          echo "identities:"; security find-identity -v -p codesigning "$KC"
+          security find-identity -v -p codesigning "$KC" | grep -q "iOS Distribution" \
+            || (echo "NO SIGNING IDENTITY IMPORTED" && exit 1)
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$PROFILE" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/Pinfall_Runner.mobileprovision
+          rm -f id.p12
+
+      - name: Archive and export a signed ipa
+        env:
+          BUILD_NUMBER: ${{ inputs.build_number }}
+        run: |
+          set -euo pipefail
+          # Godot 4.6.3's template links against the Xcode 16 Swift runtime; under 15.x every
+          # file compiles and the link dies on __swift_FORCE_LOAD_$_swift_Builtin_float.
+          XC=$(ls -d /Applications/Xcode_16*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$XC" ] && sudo xcode-select -s "$XC/Contents/Developer"
+          xcodebuild -version
+          cd export
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" Pinfall/Pinfall-Info.plist \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" Pinfall/Pinfall-Info.plist
+          cat > ExportOptions.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>4X59743R44</string>
+            <key>provisioningProfiles</key>
+            <dict><key>com.piotraiventures.pinfall</key><string>Pinfall_Runner</string></dict>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -project Pinfall.xcodeproj -scheme Pinfall \
+            -configuration Release -sdk iphoneos -archivePath Pinfall.xcarchive \
+            DEVELOPMENT_TEAM=4X59743R44 \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="iOS Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER=Pinfall_Runner \
+            archive 2>&1 | tail -30
+          test -d Pinfall.xcarchive || (echo "NO ARCHIVE PRODUCED" && exit 1)
+          xcodebuild -exportArchive -archivePath Pinfall.xcarchive \
+            -exportOptionsPlist ExportOptions.plist -exportPath ipa 2>&1 | tail -25
+          IPA=$(find ipa -name "*.ipa" | head -1)
+          test -n "$IPA" || (echo "NO IPA PRODUCED" && exit 1)
+          echo "IPA=$IPA" >> "$GITHUB_ENV"
+          ls -la "$IPA"
+
+      - name: Upload to App Store Connect
+        env:
+          KEY_B64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          # altool reads the key from this exact path by convention; passing it inline is not
+          # supported for .p8 keys.
+          mkdir -p ~/private_keys
+          echo "$KEY_B64" | base64 -d > ~/private_keys/AuthKey_${KEY_ID}.p8
+          cd export
+          xcrun altool --validate-app -f "$IPA" -t ios \
+            --apiKey "$KEY_ID" --apiIssuer "$ISSUER" 2>&1 | tail -20
+          xcrun altool --upload-app -f "$IPA" -t ios \
+            --apiKey "$KEY_ID" --apiIssuer "$ISSUER" 2>&1 | tail -20
+          rm -f ~/private_keys/AuthKey_${KEY_ID}.p8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinfall-ipa
+          path: export/ipa/
+          retention-days: 14
